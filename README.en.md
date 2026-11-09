@@ -2,7 +2,7 @@
 
 **An operating system governed by a model. Written from scratch. No Linux.**
 
-> Status: **concept v0.1** — not a single line of code yet, only a specification.
+> Status: **concept v0.2** — not a single line of code yet, only a specification.
 > License: not chosen yet. Language: [Русский](README.md).
 
 ---
@@ -49,6 +49,9 @@ inference appliance.
    only allow-listed capabilities.
 5. **A demo at every step.** A milestone without a working demonstration is not a
    milestone.
+6. **Memory is part of the system.** Sessions and knowledge survive reboot: transcripts,
+   KV-cache snapshots, distilled facts with provenance. Returning to a conversation
+   does not re-read the history from scratch.
 
 ## What it looks like
 
@@ -68,6 +71,29 @@ The service died at 03:14 while allocating 512 MB — the service pool was exhau
 by a background indexing job. The model was idle at the time. Suggestion: cap the
 indexer to the background pool — apply? (yes/no)
 ```
+
+## Long-term memory
+
+The system remembers the state of a conversation, not just the text:
+
+| Kind of memory | What it holds |
+|---|---|
+| Working | KV-cache of the current generation — in RAM, pinned pages |
+| Episodic | session and event transcripts — append-only log on NVMe |
+| Semantic | distilled facts and decisions with provenance ("where I know it from, who confirmed it") |
+| Procedural | the capability catalog and plan templates |
+
+The argument is the cost of re-reading. Prefill on the flagship model is ≈ 44 tok/s:
+"remembering" a 10,000-token conversation costs **≈ 225 seconds** of recomputation. So
+a session is parked as a KV-cache snapshot keyed by (model, prefix hash, tokenizer
+version); on return the system reads only the tail of the log and pages in what it
+needs — seconds of NVMe reads instead of minutes of prefill.
+
+Context is assembled by a deterministic builder with a hard token budget (system
+instruction, pinned facts, recent turns, retrieved episodes). The model can ask for
+more memory only through the `mem.search` capability — under policy and audit, not by
+"reading everything". What the model itself remembers is marked `unverified` until a
+human confirms it.
 
 ## Hardware and model (MVP contract)
 
