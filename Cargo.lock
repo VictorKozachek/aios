@@ -7,6 +7,10 @@ name = "aios-kernel"
 version = "0.1.0"
 
 [[package]]
+name = "bootinfo"
+version = "0.1.0"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -63,6 +67,10 @@ dependencies = [
  "ciborium",
  "serde",
 ]
+
+[[package]]
+name = "mmcore"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"
