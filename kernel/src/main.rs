@@ -50,7 +50,7 @@ pub extern "C" fn _start() -> ! {
             let version = unsafe { boot::limine::cstr(info.version) };
             println!("limine: {} {}", name, version);
         }
-        None => println!("limine: <bootloader info недоступна>"),
+        None => println!("limine: <bootloader info unavailable>"),
     }
 
     // Framebuffer подключаем до основной сводки: тогда экран и serial
@@ -58,14 +58,14 @@ pub extern "C" fn _start() -> ! {
     if let Some(framebuffer) = boot::limine::primary_framebuffer() {
         console::init_framebuffer(framebuffer);
     } else {
-        println!("console: framebuffer отсутствует, остаются serial и debugcon");
+        println!("console: no framebuffer, serial + debugcon only");
     }
 
     let info = boot::collect();
     boot::report(&info);
 
     println!();
-    println!("boot: ok, halting (M0: планировщика ещё нет)");
+    println!("boot: ok, halting (M0: no scheduler yet)");
     io::halt_forever();
 }
 

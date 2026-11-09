@@ -102,8 +102,8 @@ pub fn init_early() {
     // Сообщаем, какие каналы живы: без этого непонятно, откуда вообще лог.
     crate::println!(
         "console: serial={}, debugcon={}",
-        if has_serial { "COM1 115200 8N1" } else { "нет" },
-        if has_debugcon { "0xE9" } else { "нет" },
+        if has_serial { "COM1 115200 8N1" } else { "none" },
+        if has_debugcon { "0xE9" } else { "none" },
     );
 }
 
@@ -113,16 +113,20 @@ pub fn init_framebuffer(framebuffer: &Framebuffer) {
     let ready = console.is_some();
     CONSOLE.with(|state| state.framebuffer = console);
     if ready {
+        let (columns, rows) = CONSOLE.with(|state| match state.framebuffer.as_ref() {
+            Some(framebuffer) => (framebuffer.columns(), framebuffer.rows()),
+            None => (0, 0),
+        });
         crate::println!(
-            "console: framebuffer {}x{} {}bpp, {}x{} символов",
+            "console: framebuffer {}x{} {}bpp, text {}x{} chars",
             framebuffer.width,
             framebuffer.height,
             framebuffer.bpp,
-            framebuffer.width as usize / 16,
-            framebuffer.height as usize / 16
+            columns,
+            rows
         );
     } else {
-        crate::println!("console: framebuffer недоступен (формат не поддерживается)");
+        crate::println!("console: framebuffer unavailable (unsupported format)");
     }
 }
 

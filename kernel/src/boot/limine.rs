@@ -273,7 +273,10 @@ pub const MEMMAP_EXECUTABLE_AND_MODULES: u64 = 6;
 pub const MEMMAP_FRAMEBUFFER: u64 = 7;
 pub const MEMMAP_RESERVED_MAPPED: u64 = 8;
 
-/// Человекочитаемое имя типа записи карты памяти.
+/// Короткое имя типа записи карты памяти.
+///
+/// Имена ограничены 16 символами: строка таблицы карты памяти должна
+/// помещаться в 80 колонок текстовой консоли на framebuffer.
 pub fn memmap_type_name(kind: u64) -> &'static str {
     match kind {
         MEMMAP_USABLE => "usable",
@@ -281,8 +284,8 @@ pub fn memmap_type_name(kind: u64) -> &'static str {
         MEMMAP_ACPI_RECLAIMABLE => "acpi-reclaimable",
         MEMMAP_ACPI_NVS => "acpi-nvs",
         MEMMAP_BAD_MEMORY => "bad-memory",
-        MEMMAP_BOOTLOADER_RECLAIMABLE => "bootloader-reclaimable",
-        MEMMAP_EXECUTABLE_AND_MODULES => "kernel-and-modules",
+        MEMMAP_BOOTLOADER_RECLAIMABLE => "boot-reclaimable",
+        MEMMAP_EXECUTABLE_AND_MODULES => "kernel+modules",
         MEMMAP_FRAMEBUFFER => "framebuffer",
         MEMMAP_RESERVED_MAPPED => "reserved-mapped",
         _ => "unknown",

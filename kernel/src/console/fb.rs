@@ -109,6 +109,16 @@ impl FramebufferConsole {
         Some(console)
     }
 
+    /// Сколько символов помещается в строке.
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
+    /// Сколько текстовых строк помещается на экране.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
     /// Записать байт текста (ASCII; всё остальное рисуется как `?`).
     pub fn write_byte(&mut self, byte: u8) {
         match byte {

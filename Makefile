@@ -24,6 +24,14 @@ else
   CARGO_PROFILE_FLAG :=
 endif
 
+# Ядро компилируется БЕЗ PIE: rustc для этого таргета по умолчанию включает
+# position-independent codegen, из-за чего вызовы идут через GOT
+# (`callq *sym@GOTPCREL(%rip)`). Наш linker.ld выбрасывает .got, и такой
+# вызов превращается в переход по мусорному адресу (проверено: page fault
+# по CR2=0x78 на первом же println!). Поэтому — static relocation model и
+# kernel code model (ядро в старшей половине, topmost 2 GiB).
+KERNEL_RUSTFLAGS := -C relocation-model=static -C code-model=kernel
+
 KERNEL := target/$(TARGET)/$(PROFILE_DIR)/aios-kernel
 IMAGE := build/aios.img
 LIMINE_CONF := build/limine.conf
@@ -97,7 +105,7 @@ help:
 # Сборка ядра под голое железо.
 kernel:
 	$(call require_tool,$(CARGO),Установите rustup (https://rustup.rs) или задайте CARGO=/path/to/cargo)
-	$(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
+	RUSTFLAGS='$(KERNEL_RUSTFLAGS)' $(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
 	@echo "make: ядро готово: $(KERNEL)"
 
 # FAT-образ ESP: EFI/BOOT/BOOTX64.EFI + limine.conf + /boot/kernel.
@@ -126,7 +134,7 @@ smoke: image
 test:
 	$(call require_tool,$(CARGO),Установите rustup (https://rustup.rs) или задайте CARGO=/path/to/cargo)
 	$(CARGO) test --package memfmt
-	$(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
+	RUSTFLAGS='$(KERNEL_RUSTFLAGS)' $(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
 	@echo "make: тесты хоста прошли, ядро собирается"
 
 clean:

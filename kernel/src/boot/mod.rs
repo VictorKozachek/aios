@@ -53,12 +53,12 @@ pub fn report(info: &BootInfo) {
 
     match info.hhdm_base {
         Some(base) => println!("HHDM base: 0x{:016x}", base),
-        None => println!("HHDM base: <загрузчик не ответил>"),
+        None => println!("HHDM base: <bootloader did not respond>"),
     }
 
     match info.rsdp {
         Some(address) => println!("RSDP: 0x{:016x}", address),
-        None => println!("RSDP: <не найден>"),
+        None => println!("RSDP: <not found>"),
     }
 
     println!(
@@ -68,7 +68,7 @@ pub fn report(info: &BootInfo) {
 
     match info.tsc_hz {
         Some(hz) => println!("TSC: {} MHz ({} Hz)", hz / 1_000_000, hz),
-        None => println!("TSC: <частота неизвестна>"),
+        None => println!("TSC: <unknown>"),
     }
 
     if let Some(framebuffer) = info.framebuffer {
@@ -83,7 +83,7 @@ pub fn report(info: &BootInfo) {
             framebuffer.blue_mask_size,
         );
     } else {
-        println!("framebuffer: <нет>");
+        println!("framebuffer: <none>");
     }
 
     report_memmap(info.memmap);
@@ -93,7 +93,7 @@ fn report_memmap(entries: &[&MemmapEntry]) {
     println!("--- memory map ---");
     println!("entries: {}", entries.len());
     if entries.is_empty() {
-        println!("<карта памяти пуста: загрузчик не ответил на запрос>");
+        println!("<memory map is empty: bootloader did not respond>");
         return;
     }
 
@@ -115,19 +115,23 @@ fn report_memmap(entries: &[&MemmapEntry]) {
         }
     }
 
+    // Две строки, а не одна: сводка должна влезать в 80 колонок.
     println!(
-        "summary: usable {} MiB, kernel+modules {} MiB, reclaimable {} MiB, framebuffer {} MiB, reserved/other {} MiB",
+        "summary: usable {} MiB, reclaimable {} MiB, framebuffer {} MiB",
         mib(usable_bytes),
-        mib(kernel_bytes),
         mib(reclaimable_bytes),
         mib(framebuffer_bytes),
+    );
+    println!(
+        "         kernel+modules {} MiB, reserved/other {} MiB",
+        mib(kernel_bytes),
         mib(reserved_bytes),
     );
 
     for (index, entry) in entries.iter().enumerate() {
         let end = entry.base.saturating_add(entry.length);
         println!(
-            "  [{:>2}] {:<22} 0x{:016x}-0x{:016x} {:>10} KiB",
+            "  [{:>2}] {:<16} {:016x}-{:016x} {:>6} KiB",
             index,
             limine::memmap_type_name(entry.kind),
             entry.base,
