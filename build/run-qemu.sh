@@ -31,7 +31,7 @@
 #   OVMF_VARS_SRC    — исходный vars-файл OVMF      (опционально)
 #   OVMF_VARS        — рабочая копия vars           ($RUN_DIR/ovmf-vars.fd)
 #   QEMU_TIMEOUT     — максимум секунд на загрузку  (120)
-#   QEMU_DONE_MARKER — строка «ядро дошло до конца» (boot: ok, halting)
+#   QEMU_DONE_MARKER — строка «ядро дошло до конца» (boot: ok)
 #   QEMU_DISPLAY     — none | cocoa | gtk | vnc=... (none)
 #   QEMU_MEMORY      — память гостя в МиБ           (512)
 #   QEMU_SMP         — число CPU гостя              (1)
@@ -51,7 +51,7 @@ IMAGE=${IMAGE:-build/aios.img}
 OVMF_CODE=${OVMF_CODE:-}
 OVMF_VARS_SRC=${OVMF_VARS_SRC:-}
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-120}
-QEMU_DONE_MARKER=${QEMU_DONE_MARKER:-boot: ok, halting}
+QEMU_DONE_MARKER=${QEMU_DONE_MARKER:-boot: ok}
 QEMU_DISPLAY=${QEMU_DISPLAY:-none}
 QEMU_MEMORY=${QEMU_MEMORY:-512}
 QEMU_SMP=${QEMU_SMP:-1}

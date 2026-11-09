@@ -16,7 +16,7 @@
 #
 # Options:
 #   --image PATH            ESP image (default: build/aios.img)
-#   --marker TEXT           boot marker to find (default: "boot: ok, halting")
+#   --marker TEXT           boot marker to find (default: "boot: ok")
 #   --timeout SECONDS       how long to wait for the marker (default: 120)
 #   --serial PATH           COM1 log (default: build/serial.log)
 #   --debugcon PATH         debugcon log (default: build/debugcon.log)
@@ -36,7 +36,7 @@
 set -euo pipefail
 
 IMAGE=${IMAGE:-build/aios.img}
-MARKER=${MARKER:-boot: ok, halting}
+MARKER=${MARKER:-boot: ok}
 TIMEOUT=${QEMU_TIMEOUT:-120}
 QEMU=${QEMU:-qemu-system-x86_64}
 MEMORY=${QEMU_MEMORY:-512}

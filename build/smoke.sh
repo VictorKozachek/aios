@@ -70,7 +70,7 @@ check "RSDP: 0x"
 check "CPUs: "
 check "TSC: "
 check "--- memory map ---"
-check "boot: ok, halting"
+check "boot: ok"
 
 # debugcon должен содержать тот же текст, что и serial (без CRLF от UART).
 if grep -qF "=== AIOS kernel ===" "$DEBUGCON_LOG"; then

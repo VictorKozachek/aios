@@ -9,6 +9,10 @@
 //! Thread stacks are buddy-allocated pages addressed through the HHDM. They are
 //! not NX yet (Limine maps the HHDM as RWX); mapping them NX is a follow-up for
 //! the memory subsystem.
+//!
+//! TODO(M1b): map thread stacks NX once the mm subsystem grows exception-safe
+//! NX mapping of stack windows. Until then M1a runs with a temporary W^X
+//! relaxation: stacks are RWX (see the card report).
 
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -223,20 +227,27 @@ pub fn start() -> ! {
         spawn_test_threads();
     }
 
-    crate::println!("boot: ok, halting (M0 marker kept for smoke/CI)");
+    // Smoke contract (changed in #016): the marker is the prefix `boot: ok`;
+    // the boot stage itself no longer halts, the scheduler keeps running.
+    crate::println!("boot: ok");
     crate::println!(
-        "boot: scheduler running (M1a): {} thread(s), idle uses hlt",
+        "boot: scheduler running, threads={}, ticks={}, timer={} Hz",
         thread_count(),
+        timer::ticks(),
+        timer::TICKS_PER_SECOND,
     );
 
     timer::start();
     let tsc_hz = unsafe { TSC_HZ };
     let tsc_start = arch::rdtsc();
     let tick_start = timer::ticks();
-    let mut reported = false;
+    let switch_start = switches();
+    let mut reported_1s = false;
+    let mut reported_5s = false;
 
     loop {
-        if !reported && tsc_hz > 0 && arch::rdtsc().saturating_sub(tsc_start) >= tsc_hz {
+        let elapsed = arch::rdtsc().saturating_sub(tsc_start);
+        if !reported_1s && tsc_hz > 0 && elapsed >= tsc_hz {
             let ticks = timer::ticks().saturating_sub(tick_start);
             crate::println!(
                 "timer: {} ticks/s (expected {}), LAPIC {} Hz",
@@ -244,11 +255,22 @@ pub fn start() -> ! {
                 timer::TICKS_PER_SECOND,
                 timer::lapic_hz(),
             );
-            crate::println!("sched: {} switches", switches());
+            reported_1s = true;
+        }
+        if !reported_5s && tsc_hz > 0 && elapsed >= tsc_hz.saturating_mul(5) {
+            let ticks = timer::ticks().saturating_sub(tick_start);
+            let switched = switches().saturating_sub(switch_start);
+            crate::println!(
+                "sched: 5s: ticks={}, switches={} ({} switches/s), threads={}",
+                ticks,
+                switched,
+                switched / 5,
+                thread_count(),
+            );
             if option_env!("AIOS_SMP_TEST") == Some("1") {
                 let (a, b) = test_counters();
                 crate::println!(
-                    "smp-test: thread A iterations={} thread B iterations={}",
+                    "smp-test: 5s: thread A iterations={} thread B iterations={}",
                     a,
                     b
                 );
@@ -261,7 +283,7 @@ pub fn start() -> ! {
                 arch::disable_interrupts();
                 io::halt_forever();
             }
-            reported = true;
+            reported_5s = true;
         }
         arch::idle_once();
     }

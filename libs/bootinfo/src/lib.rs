@@ -27,7 +27,7 @@ pub mod summary;
 
 pub use error::BootInfoError;
 pub use framebuffer::{Channel, Framebuffer, MEMORY_MODEL_RGB};
-pub use info::{BootInfo, EntropySource, PagingMode};
+pub use info::{BootInfo, CpuInfo, EntropySource, PagingMode};
 pub use memmap::{MemmapEntry, MemmapKind, MemmapSummary};
 pub use module::Module;
 pub use summary::Summary;
@@ -46,6 +46,9 @@ pub const MAX_MEMMAP: usize = 128;
 
 /// Сколько загруженных модулей помещается в `BootInfo`.
 pub const MAX_MODULES: usize = 8;
+
+/// Сколько процессоров помещается в `BootInfo` (MP-ответ Limine).
+pub const MAX_CPUS: usize = 8;
 
 /// Длина энтропии в `BootInfo`: 32 байта хватает на seed ключей и API-токенов.
 pub const ENTROPY_BYTES: usize = 32;

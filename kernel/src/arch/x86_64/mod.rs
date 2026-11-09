@@ -13,7 +13,7 @@ pub mod timer;
 pub mod tss;
 
 /// Maximum number of CPUs the kernel supports (per-CPU tables are sized to it).
-pub const MAX_CPUS: usize = 8;
+pub const MAX_CPUS: usize = bootinfo::MAX_CPUS;
 
 /// Install GDT/TSS and IDT, then run the optional exception self-test.
 ///

@@ -51,8 +51,15 @@ pub fn init(boot: &BootInfo) {
         setup_bsp(0);
         return;
     };
-    let cpus = limine::mp_cpus().unwrap_or(&[]);
+    // CPU data comes from `BootInfo` (arch-neutral); only the release
+    // mechanism (`goto_address`) is Limine-specific and stays in `boot/limine`.
+    let cpus = boot.cpus();
     let count = core::cmp::min(cpus.len(), MAX_CPUS);
+    if count == 0 {
+        crate::println!("smp: no CPUs in BootInfo, running single-CPU");
+        setup_bsp(0);
+        return;
+    }
 
     // Fill per-CPU tables and GDT/TSS for every CPU on the BSP.
     for (index, info) in cpus.iter().enumerate().take(count) {
@@ -60,7 +67,7 @@ pub fn init(boot: &BootInfo) {
         unsafe {
             let per_cpu = &raw mut PER_CPU;
             (*per_cpu)[index].lapic_id = info.lapic_id;
-            (*per_cpu)[index].cpu_id = index as u32;
+            (*per_cpu)[index].cpu_id = info.cpu_id;
         }
         gdt::prepare(index);
     }
@@ -76,8 +83,13 @@ pub fn init(boot: &BootInfo) {
 
     // Release the APs: everything they read must be initialised before the
     // release store to `goto_address`.
+    let mp_infos = limine::mp_cpus().unwrap_or(&[]);
     let mut expected = 1u32;
-    for info in cpus.iter().take(count).skip(1) {
+    for index in 1..count {
+        let Some(info) = mp_infos.get(index) else {
+            crate::println!("smp: no MP info for CPU {index}, skipping release");
+            continue;
+        };
         let info = *info as *const MpInfo as *mut MpInfo;
         // SAFETY: the bootloader owns the structure but guarantees that a
         // writable `goto_address` is the release mechanism. The extra argument

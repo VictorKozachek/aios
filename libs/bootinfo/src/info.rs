@@ -4,7 +4,7 @@ use crate::error::BootInfoError;
 use crate::framebuffer::Framebuffer;
 use crate::memmap::{MemmapEntry, MemmapKind, MemmapSummary};
 use crate::module::Module;
-use crate::{ENTROPY_BYTES, MAX_MEMMAP, MAX_MODULES, PAGE_SIZE};
+use crate::{ENTROPY_BYTES, MAX_CPUS, MAX_MEMMAP, MAX_MODULES, PAGE_SIZE};
 
 /// Режим страниц, включённый загрузчиком.
 ///
@@ -81,6 +81,38 @@ impl EntropySource {
     }
 }
 
+/// Один процессор из MP-ответа загрузчика.
+///
+/// `cpu_id` — принятая в ядре нумерация (BSP = 0, далее по порядку в ответе);
+/// `processor_id` — ACPI Processor UID; `lapic_id` — Local APIC ID.
+/// Механизм запуска AP (`goto_address` в протоколе Limine) остаётся в
+/// `kernel/src/boot/limine.rs`: это не данные, а способ разбудить CPU.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuInfo {
+    /// Нумерация ядра: BSP = 0.
+    pub cpu_id: u32,
+    /// ACPI Processor UID (MADT).
+    pub processor_id: u32,
+    /// Local APIC ID.
+    pub lapic_id: u32,
+}
+
+impl CpuInfo {
+    pub const EMPTY: Self = Self {
+        cpu_id: 0,
+        processor_id: 0,
+        lapic_id: 0,
+    };
+
+    pub const fn new(cpu_id: u32, processor_id: u32, lapic_id: u32) -> Self {
+        Self {
+            cpu_id,
+            processor_id,
+            lapic_id,
+        }
+    }
+}
+
 /// Всё, что загрузчик передал ядру на входе (ARCHITECTURE.md §3).
 ///
 /// Массивы фиксированной длины: на входе в ядро нет аллокатора. Верхние поля
@@ -109,6 +141,10 @@ pub struct BootInfo {
     pub cpu_count: u64,
     /// LAPIC ID загрузочного процессора.
     pub bsp_lapic_id: u32,
+    /// Процессоры из MP-ответа (BSP включён, порядок загрузчика).
+    pub cpus: [CpuInfo; MAX_CPUS],
+    /// Сколько записей `cpus` заполнено.
+    pub cpus_len: u8,
     /// 32 байта энтропии от загрузчика/железа, если удалось добыть.
     pub entropy: Option<[u8; ENTROPY_BYTES]>,
     /// Источник энтропии.
@@ -135,6 +171,8 @@ impl BootInfo {
             tsc_hz: None,
             cpu_count: 0,
             bsp_lapic_id: 0,
+            cpus: [CpuInfo::EMPTY; MAX_CPUS],
+            cpus_len: 0,
             entropy: None,
             entropy_source: EntropySource::None,
             modules: [Module::EMPTY; MAX_MODULES],
@@ -153,6 +191,23 @@ impl BootInfo {
     pub fn modules(&self) -> &[Module] {
         let len = core::cmp::min(self.modules_len as usize, MAX_MODULES);
         &self.modules[..len]
+    }
+
+    /// Заполненные записи о процессорах.
+    pub fn cpus(&self) -> &[CpuInfo] {
+        let len = core::cmp::min(self.cpus_len as usize, MAX_CPUS);
+        &self.cpus[..len]
+    }
+
+    /// Добавить запись о процессоре; `false`, если места нет.
+    pub fn push_cpu(&mut self, cpu: CpuInfo) -> bool {
+        let len = self.cpus_len as usize;
+        if len >= MAX_CPUS {
+            return false;
+        }
+        self.cpus[len] = cpu;
+        self.cpus_len = (len + 1) as u8;
+        true
     }
 
     /// Добавить запись карты памяти; `false`, если места нет (флаг `truncated`).
@@ -318,6 +373,10 @@ impl BootInfo {
 
         if self.entropy.is_none() && self.entropy_source != EntropySource::None {
             return Err(BootInfoError::MissingEntropy);
+        }
+
+        if self.cpus_len as usize > MAX_CPUS {
+            return Err(BootInfoError::CpusTruncated);
         }
 
         if self.modules_truncated || self.modules_len as usize > MAX_MODULES {
