@@ -5,7 +5,14 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+# Checkpoint CBOR codec (ARCHITECTURE §5.3, §5.12). The `cbor` feature is
+# enabled only by services with an allocator: "the kernel does not parse CBOR at
+# all" (§5.12), so by default the crate builds with no dependencies and no
+# allocator.
+ciborium = { version = "0.2.2", optional = true, default-features = false }
+serde = { version = "1", optional = true, default-features = false, features = ["derive", "alloc"] }
 
 [features]
 default = []
-std = []
+# Canonical CBOR for checkpoints (§5.3, §5.12). Pulls in the allocator.
+cbor = ["dep:ciborium", "dep:serde"]
