@@ -223,9 +223,12 @@ pub fn switches() -> u64 {
 /// Start the scheduler: unmask the timer, enable interrupts and run the idle
 /// loop. Never returns.
 pub fn start() -> ! {
-    if option_env!("AIOS_SMP_TEST") == Some("1") {
-        spawn_test_threads();
-    }
+    // Two demo kernel threads run by default so that a plain `make qemu`
+    // demonstrates preemption (switches > 0 and growing counters); the
+    // AIOS_SMP_TEST switch only adds the verdict and stops the VM.
+    spawn("demo-a", demo_thread_a);
+    spawn("demo-b", demo_thread_b);
+    let test_mode = option_env!("AIOS_SMP_TEST") == Some("1");
 
     // Smoke contract (changed in #016): the marker is the prefix `boot: ok`;
     // the boot stage itself no longer halts, the scheduler keeps running.
@@ -267,8 +270,9 @@ pub fn start() -> ! {
                 switched / 5,
                 thread_count(),
             );
-            if option_env!("AIOS_SMP_TEST") == Some("1") {
-                let (a, b) = test_counters();
+            let (a, b) = demo_counters();
+            crate::println!("sched: demo threads: A iterations={} B iterations={}", a, b);
+            if test_mode {
                 crate::println!(
                     "smp-test: 5s: thread A iterations={} thread B iterations={}",
                     a,
@@ -301,33 +305,28 @@ fn thread_count() -> usize {
     count
 }
 
-// --- Optional SMP scheduler self-test (`AIOS_SMP_TEST=1`) -----------------
+// --- Demo kernel threads (and the optional AIOS_SMP_TEST verdict) ----------
 
-static TEST_A: AtomicU64 = AtomicU64::new(0);
-static TEST_B: AtomicU64 = AtomicU64::new(0);
+static DEMO_A: AtomicU64 = AtomicU64::new(0);
+static DEMO_B: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn test_thread_a() {
+extern "C" fn demo_thread_a() {
     loop {
-        TEST_A.fetch_add(1, Ordering::Relaxed);
+        DEMO_A.fetch_add(1, Ordering::Relaxed);
         arch::pause();
     }
 }
 
-extern "C" fn test_thread_b() {
+extern "C" fn demo_thread_b() {
     loop {
-        TEST_B.fetch_add(1, Ordering::Relaxed);
+        DEMO_B.fetch_add(1, Ordering::Relaxed);
         arch::pause();
     }
 }
 
-fn spawn_test_threads() {
-    spawn("test-a", test_thread_a);
-    spawn("test-b", test_thread_b);
-}
-
-fn test_counters() -> (u64, u64) {
+fn demo_counters() -> (u64, u64) {
     (
-        TEST_A.load(Ordering::Relaxed),
-        TEST_B.load(Ordering::Relaxed),
+        DEMO_A.load(Ordering::Relaxed),
+        DEMO_B.load(Ordering::Relaxed),
     )
 }
