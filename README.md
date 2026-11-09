@@ -117,6 +117,7 @@ MVP фиксирует **одну плату** — писать драйверы
 README.md                      — этот файл
 README.en.md                   — английская версия
 docs/SPECIFICATION.md          — спецификация: концепция, требования, варианты, дорожная карта
+docs/ARCHITECTURE.md         — архитектура: ядро, ABI, форматы памяти, ADR, первый срез
 docs/research/deepseek-hw-facts.md   — модель/железо: размеры, квантования, замеры tok/s
 docs/research/aios-tech-facts.md     — загрузка, драйверы, стек, трудозатраты
 ```

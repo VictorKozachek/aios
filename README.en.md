@@ -118,6 +118,7 @@ params` for MoE. That is what drives model selection.
 README.md                      — Russian version
 README.en.md                   — this file
 docs/SPECIFICATION.md          — specification: concept, requirements, options, roadmap
+docs/ARCHITECTURE.md         — architecture: kernel, ABI, memory formats, ADRs, first slice
 docs/research/deepseek-hw-facts.md   — models/hardware: sizes, quantizations, tok/s measurements
 docs/research/aios-tech-facts.md     — boot, drivers, stack, effort estimates
 ```
