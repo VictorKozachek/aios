@@ -84,7 +84,7 @@ jobs:
           tests/qemu-smoke/run.sh \
             --image build/aios.img \
             --timeout 120 \
-            --marker 'boot: ok, halting' \
+            --marker 'boot: ok' \
             --serial build/serial.log \
             --debugcon build/debugcon.log
 

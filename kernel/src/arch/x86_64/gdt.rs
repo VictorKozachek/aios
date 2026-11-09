@@ -1,17 +1,18 @@
-//! Global Descriptor Table, segment reload and the syscall MSR groundwork.
+//! Global Descriptor Table per CPU, segment reload and syscall MSR groundwork.
 //!
-//! The GDT contains the null descriptor, kernel code/data and a 64-bit TSS
-//! descriptor. After `lgdt` the code segment must be reloaded with a far
-//! return (there is no way to `mov cs, ...`), and the data segments with
-//! ordinary moves. TSS is loaded with `ltr`.
+//! Each CPU has its own GDT with a descriptor for its own TSS: `rsp0` and the
+//! IST stacks are per-CPU. [`prepare`] fills the static tables (safe on the BSP
+//! for every CPU); [`load`] performs the CPU-local operations (`lgdt`, far
+//! return to reload CS, `ltr`) and must run on the target CPU.
 //!
 //! STAR/LSTAR are prepared here as groundwork for `SYSCALL`; EFER.SCE stays
-//! disabled: there is no user mode and no syscall path in M0, so a stray
+//! disabled: there is no user mode and no syscall path yet, so a stray
 //! `syscall` must trap instead of silently entering a placeholder.
 
 use core::arch::{asm, global_asm};
 use core::mem::size_of;
 
+use crate::arch::x86_64::MAX_CPUS;
 use crate::arch::x86_64::tss;
 
 /// Kernel code selector (GDT index 1).
@@ -37,7 +38,7 @@ struct DescriptorPointer {
     base: u64,
 }
 
-static mut GDT: [u64; GDT_ENTRIES] = [0; GDT_ENTRIES];
+static mut GDT: [[u64; GDT_ENTRIES]; MAX_CPUS] = [[0; GDT_ENTRIES]; MAX_CPUS];
 
 unsafe extern "C" {
     fn aios_reload_cs();
@@ -64,27 +65,40 @@ aios_syscall_stub:
 "#
 );
 
-/// Build and load the GDT, then load the TSS.
-pub fn init() {
-    tss::init();
+/// Fill the static GDT/TSS tables for `cpu` (safe on the BSP for any CPU).
+pub fn prepare(cpu: usize) {
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    tss::init(cpu);
 
-    let tss_base = (&raw const tss::TSS) as u64;
+    let tss_base = tss::tss_ptr(cpu) as u64;
     let tss_limit = (size_of::<tss::Tss>() - 1) as u32;
     let (tss_low, tss_high) = tss_descriptor(tss_base, tss_limit);
 
-    // SAFETY: single-threaded boot code, no interrupts are enabled; the GDT
-    // memory is a static array that outlives the CPU state.
+    // SAFETY: `cpu` is bounds-checked; the table is static.
     unsafe {
         let gdt = &raw mut GDT;
-        (*gdt)[0] = 0;
-        (*gdt)[1] = CODE_SEGMENT;
-        (*gdt)[2] = DATA_SEGMENT;
-        (*gdt)[3] = tss_low;
-        (*gdt)[4] = tss_high;
+        (*gdt)[cpu][0] = 0;
+        (*gdt)[cpu][1] = CODE_SEGMENT;
+        (*gdt)[cpu][2] = DATA_SEGMENT;
+        (*gdt)[cpu][3] = tss_low;
+        (*gdt)[cpu][4] = tss_high;
+    }
+}
 
+/// CPU-local part: `lgdt`, reload CS/DS/ES/SS/FS/GS, then `ltr`.
+pub fn load(cpu: usize) {
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    // SAFETY: single-threaded per CPU; interrupts are disabled while the
+    // tables are switched, and the static arrays outlive the CPU state.
+    unsafe {
+        let gdt = &raw mut GDT;
         let pointer = DescriptorPointer {
             limit: (GDT_ENTRIES * size_of::<u64>() - 1) as u16,
-            base: (*gdt).as_ptr() as u64,
+            base: (*gdt)[cpu].as_ptr() as u64,
         };
         asm!("lgdt [{}]", in(reg) &pointer, options(nostack, preserves_flags));
 
@@ -102,6 +116,12 @@ pub fn init() {
         );
         asm!("ltr ax", in("ax") TSS_SELECTOR, options(nostack, preserves_flags));
     }
+}
+
+/// BSP setup: GDT/TSS for CPU 0.
+pub fn init() {
+    prepare(0);
+    load(0);
 }
 
 /// Two halves of a 64-bit TSS descriptor.

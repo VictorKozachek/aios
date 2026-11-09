@@ -95,7 +95,7 @@ help:
 	@echo "  make test     — тесты хоста (memfmt) + сборка ядра под target"
 	@echo "  make clean    — удалить собранное и логи"
 	@echo
-	@echo "Переменные: PROFILE=debug|release, QEMU_DISPLAY=none|cocoa|gtk,"
+	@echo "Переменные: PROFILE=debug|release, QEMU_DISPLAY=none|cocoa|gtk, QEMU_SMP=N,"
 	@echo "            QEMU_TIMEOUT=секунд (лимит на загрузку), OVMF_CODE=..., LIMINE_DIR=..."
 	@echo
 	@echo "Найдено: LIMINE_DIR='$(LIMINE_DIR)'"
@@ -137,7 +137,7 @@ qemu: image
 	$(call require_tool,$(QEMU),Установите QEMU: brew install qemu)
 	QEMU='$(QEMU)' IMAGE=$(IMAGE) \
 	OVMF_CODE='$(OVMF_CODE)' OVMF_VARS_SRC='$(OVMF_VARS_SRC)' \
-	QEMU_TIMEOUT=$(QEMU_TIMEOUT) QEMU_DISPLAY=$(QEMU_DISPLAY) \
+	QEMU_TIMEOUT=$(QEMU_TIMEOUT) QEMU_DISPLAY=$(QEMU_DISPLAY) QEMU_SMP=$(QEMU_SMP) \
 		./build/run-qemu.sh
 
 # Дымовой тест: QEMU + проверка маркеров в логе.
@@ -145,7 +145,7 @@ smoke: image
 	$(call require_tool,$(QEMU),Установите QEMU: brew install qemu)
 	QEMU='$(QEMU)' IMAGE=$(IMAGE) \
 	OVMF_CODE='$(OVMF_CODE)' OVMF_VARS_SRC='$(OVMF_VARS_SRC)' \
-	QEMU_TIMEOUT=$(QEMU_TIMEOUT) \
+	QEMU_TIMEOUT=$(QEMU_TIMEOUT) QEMU_SMP=$(QEMU_SMP) \
 		./build/smoke.sh
 
 # Тесты хоста + проверка, что ядро собирается под target.

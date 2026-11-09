@@ -25,6 +25,7 @@ fn main() {
     // and a test run silently gets the normal kernel instead of the test one.
     println!("cargo:rerun-if-env-changed=AIOS_EXC_TEST");
     println!("cargo:rerun-if-env-changed=AIOS_MEM_TEST");
+    println!("cargo:rerun-if-env-changed=AIOS_SMP_TEST");
 
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=build.rs");

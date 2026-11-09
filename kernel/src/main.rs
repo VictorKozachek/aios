@@ -16,6 +16,8 @@ mod boot;
 mod console;
 mod io;
 mod mm;
+mod sched;
+mod smp;
 
 /// Точка входа ядра. Limine передаёт управление сюда без аргументов.
 #[unsafe(no_mangle)]
@@ -72,7 +74,11 @@ pub extern "C" fn _start() -> ! {
     boot::report(&info);
     mm::init(&info);
 
-    println!();
-    println!("boot: ok, halting (M0: no scheduler yet)");
-    io::halt_forever();
+    // M1a: per-CPU state + AP bring-up (LAPIC/IDT ready on every CPU), then the
+    // scheduler and the timer. Interrupts are enabled inside `sched::start`
+    // only after IDT + timer + scheduler are ready.
+    smp::init(&info);
+    sched::init(&info);
+    arch::x86_64::timer::init(info.tsc_hz);
+    sched::start();
 }

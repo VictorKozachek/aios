@@ -31,9 +31,10 @@
 #   OVMF_VARS_SRC    — исходный vars-файл OVMF      (опционально)
 #   OVMF_VARS        — рабочая копия vars           ($RUN_DIR/ovmf-vars.fd)
 #   QEMU_TIMEOUT     — максимум секунд на загрузку  (120)
-#   QEMU_DONE_MARKER — строка «ядро дошло до конца» (boot: ok, halting)
+#   QEMU_DONE_MARKER — строка «ядро дошло до конца» (boot: ok)
 #   QEMU_DISPLAY     — none | cocoa | gtk | vnc=... (none)
 #   QEMU_MEMORY      — память гостя в МиБ           (512)
+#   QEMU_SMP         — число CPU гостя              (1)
 #   SERIAL_LOG, DEBUGCON_LOG, QEMU_LOG — переопределить пути логов
 #
 # Скрипт-запускалка не падает при отсутствии маркера: он печатает последние
@@ -50,9 +51,10 @@ IMAGE=${IMAGE:-build/aios.img}
 OVMF_CODE=${OVMF_CODE:-}
 OVMF_VARS_SRC=${OVMF_VARS_SRC:-}
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-120}
-QEMU_DONE_MARKER=${QEMU_DONE_MARKER:-boot: ok, halting}
+QEMU_DONE_MARKER=${QEMU_DONE_MARKER:-boot: ok}
 QEMU_DISPLAY=${QEMU_DISPLAY:-none}
 QEMU_MEMORY=${QEMU_MEMORY:-512}
+QEMU_SMP=${QEMU_SMP:-1}
 
 # Абсолютные пути: скрипт может запускаться из любого каталога.
 case "$IMAGE" in
@@ -173,6 +175,7 @@ write_pid_entry
 qemu_args=(
     -M q35
     -m "$QEMU_MEMORY"
+    -smp "$QEMU_SMP"
     # Код прошивки монтируем только на чтение...
     -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
     # ...а образ — с snapshot=on: без блокировки файла и без записи в него,

@@ -195,6 +195,29 @@ fn modules_truncated_is_rejected() {
     assert_eq!(info.validate(), Err(BootInfoError::ModulesTruncated));
 }
 
+#[test]
+fn cpu_records_push_and_slice() {
+    let mut info = BootInfo::new();
+    assert!(info.cpus().is_empty());
+    for index in 0..MAX_CPUS {
+        assert!(info.push_cpu(CpuInfo::new(index as u32, 100 + index as u32, index as u32)));
+    }
+    assert_eq!(info.cpus().len(), MAX_CPUS);
+    assert_eq!(info.cpus()[2].cpu_id, 2);
+    assert_eq!(info.cpus()[2].processor_id, 102);
+    assert_eq!(info.cpus()[2].lapic_id, 2);
+    assert!(!info.push_cpu(CpuInfo::new(99, 99, 99)));
+    assert_eq!(info.cpus().len(), MAX_CPUS);
+}
+
+#[test]
+fn cpu_count_above_capacity_is_rejected() {
+    let mut info = sample();
+    info.cpus_len = MAX_CPUS as u8 + 1;
+    assert_eq!(info.cpus().len(), MAX_CPUS);
+    assert_eq!(info.validate(), Err(BootInfoError::CpusTruncated));
+}
+
 // --- Валидация ------------------------------------------------------------
 
 #[test]

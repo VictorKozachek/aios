@@ -10,8 +10,8 @@ pub mod crash;
 pub mod limine;
 
 use bootinfo::{
-    BootInfo, Channel, EntropySource, Framebuffer, MAX_MODULES, MemmapEntry, MemmapKind, Module,
-    PagingMode,
+    BootInfo, Channel, CpuInfo, EntropySource, Framebuffer, MAX_MODULES, MemmapEntry, MemmapKind,
+    Module, PagingMode,
 };
 
 use crate::println;
@@ -53,6 +53,13 @@ pub fn collect() -> BootInfo {
     if let Some(mp) = limine::mp() {
         info.cpu_count = mp.cpu_count;
         info.bsp_lapic_id = mp.bsp_lapic_id;
+    }
+    if let Some(cpus) = limine::mp_cpus() {
+        for (index, cpu) in cpus.iter().enumerate() {
+            if !info.push_cpu(CpuInfo::new(index as u32, cpu.processor_id, cpu.lapic_id)) {
+                break;
+            }
+        }
     }
 
     if let Some(modules) = limine::modules() {

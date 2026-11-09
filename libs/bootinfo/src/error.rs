@@ -39,6 +39,8 @@ pub enum BootInfoError {
     FramebufferBadBpp(u16),
     /// Модулей пришло больше, чем помещается в [`MAX_MODULES`](crate::MAX_MODULES).
     ModulesTruncated,
+    /// Процессоров пришло больше, чем помещается в [`MAX_CPUS`](crate::MAX_CPUS).
+    CpusTruncated,
     /// Модуль с нулевым адресом.
     ModuleZeroAddress { index: usize },
     /// Модуль нулевого размера.
@@ -86,6 +88,9 @@ impl fmt::Display for BootInfoError {
             }
             Self::ModulesTruncated => {
                 f.write_str("список модулей обрезан: модулей больше, чем помещается")
+            }
+            Self::CpusTruncated => {
+                f.write_str("список процессоров обрезан: CPU больше, чем помещается")
             }
             Self::ModuleZeroAddress { index } => {
                 write!(f, "модуль #{index} имеет нулевой адрес")
