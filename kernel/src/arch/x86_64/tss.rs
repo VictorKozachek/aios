@@ -77,3 +77,27 @@ pub fn init() {
 fn stack_top(base: *mut u8) -> u64 {
     base as u64 + IST_STACK_SIZE as u64
 }
+
+/// Which IST stack contains `pointer` (1..=3), if any.
+///
+/// An exception handler can prove it runs on an IST stack by checking its own
+/// `rsp` against these ranges; `AIOS_EXC_TEST=pf` prints exactly that.
+pub fn ist_index_for_stack_pointer(pointer: u64) -> Option<u8> {
+    let stacks = [
+        (
+            IST_DOUBLE_FAULT,
+            &raw const IST_DOUBLE_FAULT_STACK as *const u8 as u64,
+        ),
+        (IST_NMI, &raw const IST_NMI_STACK as *const u8 as u64),
+        (
+            IST_PAGE_FAULT,
+            &raw const IST_PAGE_FAULT_STACK as *const u8 as u64,
+        ),
+    ];
+    for (index, base) in stacks {
+        if pointer >= base && pointer < base + IST_STACK_SIZE as u64 {
+            return Some(index);
+        }
+    }
+    None
+}

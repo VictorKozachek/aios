@@ -194,6 +194,10 @@ pub extern "C" fn aios_exception_handler(frame: *const InterruptFrame) -> ! {
             frame.rip,
         );
     }
+    match crate::arch::x86_64::tss::ist_index_for_stack_pointer(current_stack_pointer()) {
+        Some(index) => crate::println!("  stack: IST{index} (own exception stack)"),
+        None => crate::println!("  stack: kernel stack (no IST for this vector)"),
+    }
     crate::println!(
         "  cs=0x{:04x} rflags=0x{:016x} rsp=0x{:016x} ss=0x{:04x} cr2=0x{:016x}",
         frame.cs,
@@ -263,6 +267,15 @@ fn vector_name(vector: u64) -> &'static str {
     }
 }
 
+fn current_stack_pointer() -> u64 {
+    let value: u64;
+    // SAFETY: reads rsp only.
+    unsafe {
+        asm!("mov {}, rsp", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
 fn read_cr2() -> u64 {
     let value: u64;
     // SAFETY: CR2 is readable from ring 0 and only holds the faulting address.
@@ -277,10 +290,14 @@ fn read_cr2() -> u64 {
 /// Used for the T3 smoke test without touching the normal boot path:
 ///
 /// ```text
-/// AIOS_EXC_TEST=int3 make image
-/// QEMU_TIMEOUT=15 make qemu     # build/serial.log: EXCEPTION #BP ...
-/// AIOS_EXC_TEST=div0 make image # and #DE respectively
+/// AIOS_EXC_TEST=int3 QEMU_TIMEOUT=50 make qemu   # EXCEPTION #BP ...
+/// AIOS_EXC_TEST=div0 QEMU_TIMEOUT=50 make qemu   # EXCEPTION #DE
+/// AIOS_EXC_TEST=pf   QEMU_TIMEOUT=50 make qemu   # EXCEPTION #PF, stack: IST3
 /// ```
+///
+/// The variable must be set for the whole command: `make qemu` depends on
+/// `make image`, and cargo tracks `option_env!`, so a separate rebuild without
+/// the variable would silently produce a normal kernel.
 ///
 /// `option_env!` is compile-time: rebuild the kernel after changing the value.
 pub fn self_test_from_env() {
@@ -290,6 +307,12 @@ pub fn self_test_from_env() {
         },
         Some("ud2") => unsafe {
             asm!("ud2", options(nomem, nostack, preserves_flags));
+        },
+        Some("pf") => unsafe {
+            // Canonical but unmapped address: a data read must raise #PF with
+            // cr2 equal to the address. #PF has its own IST stack, so this
+            // also demonstrates the IST wiring from the TSS.
+            core::ptr::read_volatile(0xffff_9000_1000_0000_u64 as *const u8);
         },
         Some("div0") => unsafe {
             // A real hardware #DE. Rust integer division panics ("attempt to
