@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - v0.1
+      - 'task/*'
+  pull_request:
+    branches:
+      - main
+      - develop
+      - v0.1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  host-tests:
+    name: Host tests and self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Host tests (libraries)
+        run: cargo test --workspace --exclude aios-kernel
+
+      - name: Kernel compiles for bare metal (x86-64)
+        run: cargo check --package aios-kernel --target x86_64-unknown-none
+
+      - name: Smoke runner self-test (no QEMU required)
+        run: tests/qemu-smoke/self-test.sh
+
+  qemu-smoke:
+    name: QEMU boot smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install QEMU, OVMF and mtools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf mtools
+          qemu-system-x86_64 --version
+
+      - name: Install Limine (BOOTX64.EFI)
+        run: tests/qemu-smoke/install-limine.sh --dest .ci/limine
+
+      - name: Build FAT-ESP image (task #001)
+        run: make image LIMINE_DIR="$PWD/.ci/limine"
+
+      - name: Boot smoke test — kernel must reach the boot marker
+        run: |
+          tests/qemu-smoke/run.sh \
+            --image build/aios.img \
+            --timeout 120 \
+            --marker 'boot: ok, halting' \
+            --serial build/serial.log \
+            --debugcon build/debugcon.log
+
+      - name: Negative check — a broken kernel must turn the gate red
+        run: |
+          tests/qemu-smoke/negative-test.sh \
+            --image build/aios.img \
+            --timeout 60 \
+            --serial build/negative/serial.log \
+            --debugcon build/negative/debugcon.log
+
+      - name: Upload boot logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-smoke-logs
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            build/serial.log
+            build/debugcon.log
+            build/qemu.stderr.log
+            build/negative/serial.log
+            build/negative/debugcon.log
+            build/negative/qemu.stderr.log
