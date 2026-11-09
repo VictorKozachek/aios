@@ -5,9 +5,16 @@ spec.md
 # macOS
 .DS_Store
 
-# Артефакты сборки (образы, ядра, карты символов)
+# Артефакты сборки (образы, ядра, карты символов).
+# build/ целиком НЕ игнорируем: там живут скрипты сборки образа и конфиг Limine.
 /target/
-/build/
+build/*.img
+build/*.iso
+build/*.log
+build/*.fd
+build/*.o
+build/*.map
+build/kernel
 *.o
 *.elf
 *.bin
