@@ -12,7 +12,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isNewer, normalizeStatus, snapshotCards } from "../dsh-kanban/lib/watcher-core.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// Разбор карточек живёт в плагине dsh-kanban. В самом плагине это соседний
+// каталог, в проекте — установленный бандл. Ищем по порядку: рядом (как в
+// репозитории плагина), затем установленный профиль, затем явный путь из env.
+const libCandidates = [
+  new URL("../dsh-kanban/lib/watcher-core.js", import.meta.url).pathname,
+  join(process.env.HOME ?? "", "projects/dsh-kanban/dsh-kanban/lib/watcher-core.js"),
+  ...(process.env.KANBAN_PLUGIN_LIB ? [process.env.KANBAN_PLUGIN_LIB] : []),
+];
+const libPath = libCandidates.find((candidate) => existsSync(candidate));
+if (!libPath) {
+  console.error(
+    "board-status: не найден watcher-core.js плагина dsh-kanban.\n" +
+      "Укажи путь: KANBAN_PLUGIN_LIB=/путь/к/dsh-kanban/lib/watcher-core.js bin/board-status.sh",
+  );
+  process.exit(1);
+}
+const { isNewer, normalizeStatus, snapshotCards } = await import(pathToFileURL(libPath).href);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const project = path.resolve(here, "..");
