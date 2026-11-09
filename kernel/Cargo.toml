@@ -1,0 +1,11 @@
+[package]
+name = "aios-kernel"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "aios-kernel"
+path = "src/main.rs"
+
+[dependencies]

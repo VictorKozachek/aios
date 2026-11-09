@@ -29,3 +29,6 @@ serial.log
 .idea/
 .vscode/
 *.swp
+
+# рабочие деревья задач (git worktree)
+/worktrees/

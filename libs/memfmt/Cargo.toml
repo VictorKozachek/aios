@@ -1,0 +1,11 @@
+[package]
+name = "memfmt"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+
+[features]
+default = []
+std = []
