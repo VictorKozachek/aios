@@ -1,4 +1,5 @@
 # локальные файлы доски: карта ролей, пул исполнителей, манифест worktree
 .watcher-roles.json
 .workers.json
+worktrees.json
 .worktrees.json
