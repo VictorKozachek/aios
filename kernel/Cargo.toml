@@ -9,3 +9,4 @@ name = "aios-kernel"
 path = "src/main.rs"
 
 [dependencies]
+bootinfo = { path = "../libs/bootinfo" }
