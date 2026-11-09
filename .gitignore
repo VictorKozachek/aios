@@ -19,6 +19,7 @@ build/kernel
 build/run-*/
 build/runs/
 build/last-run
+build/qemu.pid
 build/.image.lock/
 *.o
 *.elf

@@ -16,9 +16,12 @@
 # прогон — `build/last-run`.
 #
 # Защита от «зависшего QEMU»: в `build/runs/<run>.pid` лежат pid владельца
-# (этого скрипта) и pid QEMU. Перед стартом скрипт снимает только те процессы,
-# чей владелец уже мёртв, — живые параллельные прогоны не трогаются. При любом
-# выходе (включая таймаут и SIGINT/SIGTERM) QEMU гасится по trap.
+# (этого скрипта) и pid QEMU; это и есть источник правды для уборки. Перед
+# стартом скрипт снимает только те процессы, чей владелец уже мёртв, — живые
+# параллельные прогоны не трогаются. `build/qemu.pid` — указатель на QEMU
+# текущего прогона (pid + каталог) для людей и внешних инструментов; под
+# параллельными прогонами он неоднозначен, поэтому уборка им не пользуется.
+# При любом выходе (включая таймаут и SIGINT/SIGTERM) QEMU гасится по trap.
 #
 # Параметры (окружение):
 #   QEMU             — бинарь QEMU                  (qemu-system-x86_64)
@@ -148,6 +151,12 @@ cleanup() {
         wait "$qemu_pid" 2>/dev/null || true
     fi
     rm -f "$PID_ENTRY"
+    # Снимаем build/qemu.pid только если он всё ещё указывает на наш QEMU:
+    # у параллельного прогона там уже может быть его pid.
+    if [ -n "$qemu_pid" ] && [ -f "$ROOT/build/qemu.pid" ] &&
+        grep -q "^pid=$qemu_pid$" "$ROOT/build/qemu.pid" 2>/dev/null; then
+        rm -f "$ROOT/build/qemu.pid"
+    fi
     # Указатель для человека: где лежат последние логи. Сами логи остаются в
     # RUN_DIR (build/run-*/ игнорируется git) — они и есть артефакт прогона.
     printf '%s\n' "$RUN_DIR" >"$LAST_RUN_FILE"
@@ -188,6 +197,8 @@ echo "qemu: образ $IMAGE, лимит ${QEMU_TIMEOUT}s, логи в $RUN_DIR
 "$QEMU" "${qemu_args[@]}" >/dev/null 2>"$QEMU_LOG" &
 qemu_pid=$!
 write_pid_entry "$qemu_pid"
+# Указатель «где сейчас QEMU»: только для человека/инструментов, не для уборки.
+printf 'pid=%s\nrun=%s\n' "$qemu_pid" "$RUN_DIR" >"$ROOT/build/qemu.pid"
 
 elapsed=0
 found=0
