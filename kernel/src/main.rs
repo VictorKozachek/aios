@@ -11,6 +11,7 @@
 //!
 //! Спецификация — `docs/ARCHITECTURE.md` §3, план — `docs/PLAN-M0.md` (T1, T2).
 
+mod arch;
 mod boot;
 mod console;
 mod io;
@@ -19,6 +20,7 @@ mod io;
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     console::init_early();
+    arch::x86_64::init();
 
     println!();
     println!("=== AIOS kernel ===");

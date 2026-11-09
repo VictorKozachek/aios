@@ -20,6 +20,11 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=-e");
     println!("cargo:rustc-link-arg-bins=_start");
 
+    // Compile-time test switches (`option_env!` in kernel sources). Without
+    // these lines cargo may reuse a cached kernel after the variable changes,
+    // and a test run silently gets the normal kernel instead of the test one.
+    println!("cargo:rerun-if-env-changed=AIOS_EXC_TEST");
+
     println!("cargo:rerun-if-changed=linker.ld");
     println!("cargo:rerun-if-changed=build.rs");
 }
