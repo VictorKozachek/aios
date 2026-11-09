@@ -15,6 +15,11 @@ build/*.fd
 build/*.o
 build/*.map
 build/kernel
+# Прогоны тестового стенда: build/run-<время>-<pid>-<rand>/ и ledger pid-файлов
+build/run-*/
+build/runs/
+build/last-run
+build/.image.lock/
 *.o
 *.elf
 *.bin
