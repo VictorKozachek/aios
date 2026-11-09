@@ -197,57 +197,76 @@ def rect_mask(canvas_shape, x0, y0, x1, y1) -> np.ndarray:
     return m
 
 
+def _bbox_mask(canvas_shape, x0, y0, x1, y1, fn, n=4) -> np.ndarray:
+    """Rasterise `fn(X, Y)` (X/Y in supersampled local coords) into a bbox mask."""
+    H, W = canvas_shape[:2]
+    x0, y0 = max(0, int(math.floor(x0))), max(0, int(math.floor(y0)))
+    x1, y1 = min(W, int(math.ceil(x1))), min(H, int(math.ceil(y1)))
+    out = np.zeros((H, W), np.float32)
+    if x1 <= x0 or y1 <= y0:
+        return out
+    w, h = x1 - x0, y1 - y0
+    yy, xx = np.mgrid[0 : h * n, 0 : w * n].astype(np.float64)
+    px = x0 + xx / n + 0.5 / n
+    py = y0 + yy / n + 0.5 / n
+    a = fn(px, py).reshape(h, n, w, n).mean(axis=(1, 3))
+    out[y0:y1, x0:x1] = a.astype(np.float32)
+    return out
+
+
 def line_mask(canvas_shape, x0, y0, x1, y1, thickness=1.0) -> np.ndarray:
-    """Anti-aliased straight segment, drawn at SS then downsampled."""
+    """Anti-aliased segment (local bbox rasterisation)."""
     H, W = canvas_shape[:2]
-    img = Image.new("L", (W * SS, H * SS), 0)
-    d = ImageDraw.Draw(img)
-    d.line(
-        [(x0 * SS, y0 * SS), (x1 * SS, y1 * SS)],
-        fill=255,
-        width=max(1, int(round(thickness * SS))),
-    )
-    return _down(img, (W, H))
+    pad = thickness + 2
+    bx0, bx1 = min(x0, x1) - pad, max(x0, x1) + pad
+    by0, by1 = min(y0, y1) - pad, max(y0, y1) + pad
+    vx, vy = x1 - x0, y1 - y0
+    denom = vx * vx + vy * vy or 1.0
+    t = np.clip(((x0 - 0) * 0 + 0), 0, 0)  # placeholder
+
+    def fn(px, py):
+        tt = np.clip(((px - x0) * vx + (py - y0) * vy) / denom, 0, 1)
+        d = np.hypot(px - (x0 + tt * vx), py - (y0 + tt * vy))
+        return np.clip(thickness / 2 + 0.5 / 4 - d, 0, 1)
+
+    return _bbox_mask(canvas_shape, bx0, by0, bx1, by1, fn, n=4)
 
 
-def circle_mask(canvas_shape, cx, cy, radius, thickness=None, n=8) -> np.ndarray:
-    """Filled disc or ring (thickness in px), analytic AA at n supersamples."""
-    H, W = canvas_shape[:2]
-    yy, xx = np.mgrid[0 : H * n, 0 : W * n].astype(np.float64)
-    d = np.hypot(xx / n + 0.5 / n - cx - 0.5, yy / n + 0.5 / n - cy - 0.5)
+def circle_mask(canvas_shape, cx, cy, radius, thickness=None, n=4) -> np.ndarray:
+    """Filled disc or ring (thickness in px), analytic AA."""
+    half = (radius + (thickness or 0) / 2 + 2)
     if thickness is None:
-        a = np.clip(radius + 0.5 / n - d, 0, 1)
+        def fn(px, py):
+            return np.clip(radius + 0.5 / n - np.hypot(px - cx, py - cy), 0, 1)
     else:
-        a = np.clip(thickness / 2 + 0.5 / n - np.abs(d - radius), 0, 1)
-    return a.reshape(H, n, W, n).mean(axis=(1, 3)).astype(np.float32)
+        def fn(px, py):
+            d = np.hypot(px - cx, py - cy)
+            return np.clip(thickness / 2 + 0.5 / n - np.abs(d - radius), 0, 1)
+    return _bbox_mask(canvas_shape, cx - half, cy - half, cx + half, cy + half, fn, n)
 
 
-def arc_mask(canvas_shape, cx, cy, radius, a0, a1, thickness=1.0, n=8) -> np.ndarray:
+def arc_mask(canvas_shape, cx, cy, radius, a0, a1, thickness=1.0, n=4) -> np.ndarray:
     """Annular arc with round caps, a0/a1 in degrees (screen coords, y down)."""
-    H, W = canvas_shape[:2]
-    yy, xx = np.mgrid[0 : H * n, 0 : W * n].astype(np.float64)
-    dx = xx / n + 0.5 / n - cx - 0.5
-    dy = yy / n + 0.5 / n - cy - 0.5
-    d = np.hypot(dx, dy)
-    a = np.clip(thickness / 2 + 0.5 / n - np.abs(d - radius), 0, 1)
-    ang = (np.degrees(np.arctan2(dy, dx)) + 360.0) % 360.0
-    if a0 <= a1:
-        inside = (ang >= a0) & (ang <= a1)
-    else:
-        inside = (ang >= a0) | (ang <= a1)
-    # round caps
-    caps = np.zeros_like(a)
-    for ang_deg in (a0, a1):
-        r = math.radians(ang_deg)
-        caps = np.maximum(caps, np.clip(thickness / 2 + 0.5 / n - np.hypot(dx - math.cos(r) * radius, dy - math.sin(r) * radius), 0, 1))
-    a = np.maximum(np.where(inside, a, 0), caps)
-    return a.reshape(H, n, W, n).mean(axis=(1, 3)).astype(np.float32)
+    def fn(px, py):
+        dx, dy = px - cx, py - cy
+        d = np.hypot(dx, dy)
+        a = np.clip(thickness / 2 + 0.5 / n - np.abs(d - radius), 0, 1)
+        ang = (np.degrees(np.arctan2(dy, dx)) + 360.0) % 360.0
+        inside = ((ang >= a0) & (ang <= a1)) if a0 <= a1 else ((ang >= a0) | (ang <= a1))
+        caps = np.zeros_like(a)
+        for ang_deg in (a0, a1):
+            r = math.radians(ang_deg)
+            caps = np.maximum(caps, np.clip(thickness / 2 + 0.5 / n - np.hypot(dx - math.cos(r) * radius, dy - math.sin(r) * radius), 0, 1))
+        return np.maximum(np.where(inside, a, 0), caps)
+
+    pad = radius + thickness + 2
+    return _bbox_mask(canvas_shape, cx - pad, cy - pad, cx + pad, cy + pad, fn, n)
 
 
 # ---------------------------------------------------------------------------
 # logo mark (shared by all variants and by the wallpaper)
 # ---------------------------------------------------------------------------
-def logo_mask(size: int, stroke: float = 4.6, gap=(-52, 214), pupil: float = 0.062) -> np.ndarray:
+def logo_mask(size: int, stroke: float = 5.0, gap=(-52, 214), pupil: float = 0.070) -> np.ndarray:
     """AIOS mark: an open 'aperture' ring with a centred pupil.
 
     Reads as a lens / eye, which is what the Limine wallpaper repeats at scale.
@@ -362,13 +381,13 @@ VARIANTS = {
         bg=[(0.0, "#05070C"), (0.52, "#0A1120"), (1.0, "#04060A")],
         ink="#E8EEF9",
         ink2="#93A3BC",
-        ink3="#4F5D73",
+        ink3="#5C6B80",
         accent="#86A9FF",
         hairline="#FFFFFF",
-        hairline_alpha=0.07,
+        hairline_alpha=0.09,
         wordmark_font=INTER_REGULAR,
-        wordmark_cap=56,
-        wordmark_tracking=0.30,
+        wordmark_cap=58,
+        wordmark_tracking=0.268,
         wordmark_color="#E8EEF9",
     ),
     "v2": Variant(
@@ -482,11 +501,11 @@ def render_v1(v: Variant, W: int, H: int) -> np.ndarray:
     blend(canvas, _place(wm, W, H, cx - wm.shape[1] // 2, g["word_top"]), rgb(v.wordmark_color))
 
     # subtitle:  SkyNet  ·  v0.0.1
-    sub = f"{CODENAME} · {VERSION}"
+    sub = f"{CODENAME} {VERSION}"
     ATLAS.draw(canvas, sub, 0, g["sub_baseline"], ink2, tracking=1, cx=cx)
 
     # git hash
-    ATLAS.draw(canvas, f"git {GIT_HASH}", 0, g["hash_baseline"], rgb("#6B7A91"), tracking=1, cx=cx)
+    ATLAS.draw(canvas, f"git {GIT_HASH}", 0, g["hash_baseline"], rgb("#74839B"), tracking=1, cx=cx)
 
     # divider
     r = g["rule_y"]
@@ -497,14 +516,14 @@ def render_v1(v: Variant, W: int, H: int) -> np.ndarray:
     for i, (label, value) in enumerate(STATUS_ROWS):
         base = g["status_baseline0"] + i * g["status_step"]
         dot = circle_mask((H, W), g["left"] + 2, base - 5, 2.0)
-        blend(canvas, dot, accent, 0.85)
+        blend(canvas, dot, accent, 0.7)
         ATLAS.draw(canvas, label, g["left"] + 16, base, ink2)
         ATLAS.draw(canvas, value, 0, base, ink, right=g["right"])
 
     # log continuation
     for i, text in enumerate(LOG_LINES):
         base = g["log_baseline0"] + i * g["log_step"]
-        ATLAS.draw(canvas, text, g["left"], base, ink3, opacity=0.75)
+        ATLAS.draw(canvas, text, g["left"], base, ink3)
     return canvas
 
 
@@ -516,14 +535,14 @@ def render_v2(v: Variant, W: int, H: int) -> np.ndarray:
     rail_x = margin - 40
 
     # vertical rail + ticks
-    rail = line_mask((H, W), 0, 0, 0, H - 160, 1.0)
+    rail = line_mask((H, W), 0, 0, 0, H - 72 - 120, 1.0)
     blend(canvas, _place(rail, W, H, rail_x, 120), rgb(v.hairline), 0.12)
     for y in range(120, H - 40, 24):
         t = line_mask((H, W), 0, 0, 5, 0, 1.0)
         blend(canvas, _place(t, W, H, rail_x, y), rgb(v.hairline), 0.10)
 
     # top-right hash
-    ATLAS.draw(canvas, f"git {GIT_HASH}", 0, 150, ink3, right=W - margin)
+    ATLAS.draw(canvas, f"git {GIT_HASH}", 0, 150, ink2, right=W - margin)
 
     # wordmark (mono, big)
     cap = v.wordmark_cap
@@ -552,9 +571,6 @@ def render_v2(v: Variant, W: int, H: int) -> np.ndarray:
     for i, text in enumerate(LOG_LINES):
         base = log0 + i * MONO_LINE
         ATLAS.draw(canvas, text, margin, base, ink3, opacity=0.8)
-    if log0 + len(LOG_LINES) * MONO_LINE + 8 < H - 40:
-        cur = rect_mask((H, W), 0, 0, MONO_ADVANCE - 2, 13)
-        blend(canvas, _place(cur, W, H, margin, log0 + len(LOG_LINES) * MONO_LINE + 3), ink3, 0.75)
     return canvas
 
 
@@ -617,7 +633,7 @@ RENDERERS = {"v1": render_v1, "v2": render_v2, "v3": render_v3}
 # ---------------------------------------------------------------------------
 # Limine wallpaper
 # ---------------------------------------------------------------------------
-def eyelid_mask(W, H, cx, cy, rx, ry, thickness, n=2):
+def eyelid_mask(W, H, cx, cy, rx, ry, thickness, n=1):
     """Eyelid curves (upper + lower) - the 'eye' motif, drawn as two arcs."""
     yy, xx = np.mgrid[0 : H * n, 0 : W * n].astype(np.float64)
     dx = (xx / n + 0.5 / n - cx) / rx
@@ -631,65 +647,73 @@ def eyelid_mask(W, H, cx, cy, rx, ry, thickness, n=2):
 
 
 def make_wallpaper(v: Variant = VARIANTS["v1"]) -> Image.Image:
+    """1920x1080 Limine wallpaper: the splash mark enlarged into a lens / eye.
+
+    Calm centre and edges (low contrast) so the boot menu stays legible; the
+    motif lives on the right third and fades out towards the menu column.
+    """
     W, H = 1920, 1080
-    canvas = vertical_gradient(W, H, v.bg, dither=True)
-    accent = np.array([0.62, 0.74, 1.0])
-    ex, ey = 1420, 540
+    canvas = vertical_gradient(
+        W, H, [(0.0, "#05070C"), (0.52, "#0A1120"), (1.0, "#04060A")], dither=True
+    )
+    accent = np.array([168.0, 199.0, 255.0])
+    ex, ey = 1512, 508
 
-    # soft halo around the eye (very low contrast, wide)
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
-    rr = np.hypot((xx - ex) / 1.25, (yy - ey))
-    halo = np.exp(-(rr / 520.0) ** 2) * 10.0  # up to +10 levels
-    canvas += halo[..., None] * accent.reshape(1, 1, 3) * 0.55
 
-    def add(mask, color, alpha, mode="over"):
+    # wide, very soft bloom - the "light source" behind the eye
+    rr = np.hypot(xx - ex, yy - ey)
+    bloom = np.exp(-((rr / 430.0) ** 2)) * 0.16
+    canvas += bloom[..., None] * accent.reshape(1, 1, 3)
+
+    def add(mask, alpha, color=accent):
         a = (mask * alpha)[..., None]
         canvas[:] = canvas * (1 - a) + np.asarray(color).reshape(1, 1, 3) * a
 
-    # concentric rings - the echo of the splash mark
+    # concentric rings: echo of the splash mark, fading outwards
     rings = [
-        (86, 1.2, 0.10, -70, 250),
-        (112, 0.8, 0.07, 20, 200),
-        (158, 1.4, 0.06, -110, 190),
-        (214, 1.0, 0.05, 40, 260),
-        (288, 1.6, 0.045, -80, 240),
-        (378, 1.0, 0.038, 10, 210),
-        (492, 1.6, 0.032, -100, 200),
-        (638, 1.2, 0.026, 30, 250),
-        (812, 1.8, 0.020, -70, 240),
+        (118, 1.6, 0.16, -64, 236),
+        (146, 0.9, 0.10, 18, 198),
+        (196, 1.4, 0.11, -104, 190),
+        (262, 1.0, 0.085, 44, 258),
+        (344, 1.6, 0.070, -78, 238),
+        (452, 1.0, 0.055, 12, 206),
+        (596, 1.8, 0.042, -98, 200),
+        (784, 1.2, 0.032, 28, 248),
+        (1010, 2.0, 0.022, -70, 240),
     ]
     for r, thick, alpha, a0, a1 in rings:
-        add(arc_mask((H, W), ex, ey, r, a0, a1, thick, n=1), accent, alpha)
+        add(arc_mask((H, W), ex, ey, r, a0, a1, thick, n=1), alpha)
 
-    # iris ticks between two rings
-    for i in range(64):
-        ang = -72 + i * 4.6
+    # iris: short radial ticks between the two innermost rings
+    for i in range(72):
+        ang = -70 + i * 5.0
         rad = math.radians(ang)
-        r0, r1 = 236, 256 + (i % 5) * 9
+        r0, r1 = 168, 196 + (i % 6) * 12
         x0, y0 = ex + math.cos(rad) * r0, ey + math.sin(rad) * r0
         x1, y1 = ex + math.cos(rad) * r1, ey + math.sin(rad) * r1
-        m = line_mask((H, W), x0, y0, x1, y1, 1.0)
-        add(m, accent, 0.028)
+        add(line_mask((H, W), x0, y0, x1, y1, 1.0), 0.085)
 
-    # eyelid hint (very faint, keeps the "eye" reading)
-    add(eyelid_mask(W, H, ex, ey, 560, 330, 1.2, n=1), accent, 0.030)
+    # eyelid hint keeps the "eye" reading without looking like a movie prop
+    add(eyelid_mask(W, H, ex, ey, 700, 380, 1.2), 0.030)
 
-    # pupil: soft disc + bright centre
-    pupil = circle_mask((H, W), ex, ey, 34, n=1)
-    add(pupil, accent, 0.055)
-    glow = np.exp(-((np.hypot(xx - ex, yy - ey)) / 120.0) ** 2)
-    canvas += glow[..., None] * accent.reshape(1, 1, 3) * 26.0
-    add(circle_mask((H, W), ex, ey, 9, n=1), accent, 0.35)
+    # pupil: a dark lens with a bright rim and a single specular highlight
+    dark = np.array([3.0, 5.0, 11.0])
+    pupil = circle_mask((H, W), ex, ey, 38, n=1)
+    a = (pupil * 0.92)[..., None]
+    canvas[:] = canvas * (1 - a) + dark.reshape(1, 1, 3) * a
+    add(circle_mask((H, W), ex, ey, 43, 1.2, n=1), 0.34)
+    add(circle_mask((H, W), ex - 10, ey - 12, 5.6, n=1), 0.55, color=np.array([209.0, 227.0, 255.0]))
 
-    # vignette: calm centre, darker edges
+    # vignette: darker frame, calm middle
     vx = np.clip(np.abs(xx - W / 2) / (W / 2), 0, 1)
     vy = np.clip(np.abs(yy - H / 2) / (H / 2), 0, 1)
-    vig = 1.0 - 0.30 * (0.55 * vx**2 + 0.45 * vy**2)
+    vig = 1.0 - 0.34 * (0.55 * vx**2 + 0.45 * vy**2)
     canvas *= vig[..., None]
 
-    # fine grain (also keeps JPEG from banding in the flat gradient)
+    # fine grain: hides JPEG banding in the flat gradient
     rng = np.random.default_rng(7)
-    canvas += rng.normal(0.0, 0.9, size=(H, W, 1))
+    canvas += rng.normal(0.0, 1.0, size=(H, W, 1))
 
     return Image.fromarray(np.clip(canvas, 0, 255).astype(np.uint8), "RGB")
 
@@ -705,7 +729,9 @@ def main() -> None:
     OUT_VARIANTS.mkdir(parents=True, exist_ok=True)
     OUT_ASSETS.mkdir(parents=True, exist_ok=True)
 
-    keys = args.only.split(",")
+    requested = args.only.split(",")
+    keys = [k for k in requested if k in VARIANTS]
+    do_wallpaper = "wallpaper" in requested
 
     # shared assets -------------------------------------------------------
     logo = logo_mask(64)
@@ -730,7 +756,7 @@ def main() -> None:
             print("wrote", OUT_VARIANTS / name)
 
     # wallpaper -----------------------------------------------------------
-    if "wallpaper" not in keys:
+    if not do_wallpaper:
         return
     wp = make_wallpaper(VARIANTS["v1"])
     wp.save(OUT_ASSETS / "wallpaper.jpg", quality=92, subsampling=0, optimize=True)
