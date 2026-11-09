@@ -18,6 +18,7 @@
 #   QEMU_DONE_MARKER — строка «ядро дошло до конца» (boot: ok)
 #   QEMU_DISPLAY     — none | cocoa | gtk | vnc=... (none)
 #   QEMU_MEMORY      — память гостя в МиБ           (512)
+#   QEMU_SMP         — число CPU гостя              (1)
 #   SERIAL_LOG, DEBUGCON_LOG — куда писать логи
 
 set -euo pipefail
@@ -31,6 +32,7 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-120}
 QEMU_DONE_MARKER=${QEMU_DONE_MARKER:-boot: ok, halting}
 QEMU_DISPLAY=${QEMU_DISPLAY:-none}
 QEMU_MEMORY=${QEMU_MEMORY:-512}
+QEMU_SMP=${QEMU_SMP:-1}
 SERIAL_LOG=${SERIAL_LOG:-build/serial.log}
 DEBUGCON_LOG=${DEBUGCON_LOG:-build/debugcon.log}
 
@@ -56,6 +58,7 @@ mkdir -p "$(dirname "$SERIAL_LOG")" "$(dirname "$DEBUGCON_LOG")"
 qemu_args=(
     -M q35
     -m "$QEMU_MEMORY"
+    -smp "$QEMU_SMP"
     # Код прошивки монтируем только на чтение...
     -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
     # ...а vars-файл — копией, чтобы каждый запуск начинался с чистого NVRAM.

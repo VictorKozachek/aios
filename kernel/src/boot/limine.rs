@@ -78,6 +78,36 @@ impl<R> Request<R> {
     }
 }
 
+/// `limine_mp_request`: like `Request<R>`, plus the xAPIC/x2APIC flag.
+#[repr(C)]
+pub struct MpRequest {
+    id: [u64; 4],
+    revision: u64,
+    response: *mut MpResponse,
+    flags: u64,
+}
+
+// SAFETY: same argument as for `Request<R>`: the bootloader writes the
+// response pointer before hand-off, after that the structure is read-only.
+unsafe impl Sync for MpRequest {}
+
+impl MpRequest {
+    const fn new(id: [u64; 4]) -> Self {
+        Self {
+            id,
+            revision: 0,
+            response: ptr::null_mut(),
+            // 0 = keep xAPIC; see the static MP documentation above.
+            flags: 0,
+        }
+    }
+
+    fn response(&self) -> Option<&'static MpResponse> {
+        // SAFETY: see `Request::response`.
+        unsafe { self.response.as_ref() }
+    }
+}
+
 // --- Запросы, которые мы отправляем загрузчику -------------------------
 
 /// Маркер начала области запросов.
@@ -117,9 +147,14 @@ static HHDM: Request<HhdmResponse> = Request::new(request_id(HHDM_ID));
 static FRAMEBUFFER: Request<FramebufferResponse> = Request::new(request_id(FRAMEBUFFER_ID));
 
 /// Multiprocessor: сколько ядер видит загрузчик и какой LAPIC ID у BSP.
+///
+/// The MP request has an extra `flags` field (the generic `Request<R>` does
+/// not): bit 0 asks the bootloader to enable x2APIC. We request xAPIC
+/// (`flags = 0`): the local APIC MMIO page is already mapped uncached by the
+/// memory subsystem, and x2APIC needs MSR access instead.
 #[used]
 #[unsafe(link_section = ".limine_requests")]
-static MP: Request<MpResponse> = Request::new(request_id(MP_ID));
+static MP: MpRequest = MpRequest::new(request_id(MP_ID));
 
 /// Карта памяти.
 #[used]
@@ -333,6 +368,24 @@ pub fn tsc_frequency() -> Option<&'static TscFrequencyResponse> {
 
 pub fn mp() -> Option<&'static MpResponse> {
     MP.response()
+}
+
+/// The CPUs reported by the MP response (BSP included).
+///
+/// The bootloader guarantees an array of `cpu_count` non-null pointers to
+/// `limine_mp_info`, alive for the whole kernel lifetime.
+pub fn mp_cpus() -> Option<&'static [&'static MpInfo]> {
+    let response = MP.response()?;
+    if response.cpu_count == 0 || response.cpus.is_null() {
+        return None;
+    }
+    // SAFETY: see the paragraph above.
+    Some(unsafe {
+        core::slice::from_raw_parts(
+            response.cpus as *const &'static MpInfo,
+            response.cpu_count as usize,
+        )
+    })
 }
 
 /// C-строка из загрузчика (`name`, `version` и т. п.).
