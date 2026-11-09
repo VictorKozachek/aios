@@ -12,10 +12,13 @@
 //! Спецификация — `docs/ARCHITECTURE.md` §3, план — `docs/PLAN-M0.md` (T1, T2).
 
 mod arch;
+mod assets;
 mod boot;
 mod console;
+mod draw;
 mod io;
 mod mm;
+mod splash;
 
 /// Точка входа ядра. Limine передаёт управление сюда без аргументов.
 #[unsafe(no_mangle)]
@@ -69,6 +72,21 @@ pub extern "C" fn _start() -> ! {
         println!("FATAL: invalid BootInfo: {}", error);
         panic!("invalid BootInfo: {}", error);
     }
+
+    // T7: сплэш v1 (docs/design/splash-spec.md) — строго после validate(), до
+    // report(). Он же задаёт геометрию лог-зоны, чтобы лог шёл под блоком.
+    let splash_meta = splash::SplashMeta::from_boot_info(&info);
+    match info.framebuffer {
+        Some(framebuffer) => {
+            if splash::draw_splash(framebuffer, &splash_meta) {
+                console::configure_framebuffer_log(splash::log_area(framebuffer));
+            } else {
+                splash::fallback(&splash_meta);
+            }
+        }
+        None => splash::fallback(&splash_meta),
+    }
+
     boot::report(&info);
     mm::init(&info);
 

@@ -36,6 +36,21 @@ KERNEL := target/$(TARGET)/$(PROFILE_DIR)/aios-kernel
 IMAGE := build/aios.img
 LIMINE_CONF := build/limine.conf
 
+# --- Версия для сплэша и wallpaper меню (T7) -------------------------------
+#
+# Ядро читает AIOS_VERSION/GIT_HASH через option_env! (kernel/src/splash.rs),
+# поэтому версия не хардкодится в коде. AIOS_VERSION — версия продукта
+# (по умолчанию v0.0.1), переопределяется из окружения/командной строки;
+# GIT_HASH всегда из git и печатается отдельной мелкой строкой.
+# WALLPAPER кладётся в FAT-образ как /wallpaper.jpg (spec §10.1).
+AIOS_VERSION ?= v0.0.1
+GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+WALLPAPER ?= docs/design/assets/wallpaper.jpg
+
+ifeq ($(strip $(AIOS_VERSION)),)
+$(error AIOS_VERSION пуст: версия сплэша должна быть задана (например v0.0.1))
+endif
+
 # --- Внешние инструменты ---------------------------------------------------
 #
 # Пути ищем сами: brew ставит всё в /opt/homebrew (Apple Silicon) или
@@ -97,6 +112,7 @@ help:
 	@echo
 	@echo "Переменные: PROFILE=debug|release, QEMU_DISPLAY=none|cocoa|gtk,"
 	@echo "            QEMU_TIMEOUT=секунд (лимит на загрузку), OVMF_CODE=..., LIMINE_DIR=..."
+	@echo "            AIOS_VERSION=... GIT_HASH=... WALLPAPER=... (сплэш и меню)"
 	@echo
 	@echo "Найдено: LIMINE_DIR='$(LIMINE_DIR)'"
 	@echo "         OVMF_CODE='$(OVMF_CODE)'"
@@ -105,7 +121,8 @@ help:
 # Сборка ядра под голое железо.
 kernel:
 	$(call require_tool,$(CARGO),Установите rustup (https://rustup.rs) или задайте CARGO=/path/to/cargo)
-	RUSTFLAGS='$(KERNEL_RUSTFLAGS)' $(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
+	RUSTFLAGS='$(KERNEL_RUSTFLAGS)' AIOS_VERSION='$(AIOS_VERSION)' GIT_HASH='$(GIT_HASH)' \
+		$(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
 	@echo "make: ядро готово: $(KERNEL)"
 
 # FAT-образ ESP: EFI/BOOT/BOOTX64.EFI + limine.conf + /boot/kernel.
@@ -130,7 +147,8 @@ image: kernel
 	done; \
 	trap 'rm -rf "$$lock"' EXIT INT TERM; \
 	echo $$$$ >"$$lock/pid"; \
-	KERNEL=$(KERNEL) IMAGE=$(IMAGE) LIMINE_DIR='$(LIMINE_DIR)' CONF=$(LIMINE_CONF) ./build/mkimage.sh
+	KERNEL=$(KERNEL) IMAGE=$(IMAGE) LIMINE_DIR='$(LIMINE_DIR)' CONF=$(LIMINE_CONF) \
+		WALLPAPER='$(WALLPAPER)' ./build/mkimage.sh
 
 # Запуск под UEFI (OVMF). По умолчанию вывод — в файлы, окно выключено.
 qemu: image
@@ -152,7 +170,8 @@ smoke: image
 test:
 	$(call require_tool,$(CARGO),Установите rustup (https://rustup.rs) или задайте CARGO=/path/to/cargo)
 	$(CARGO) test --package memfmt
-	RUSTFLAGS='$(KERNEL_RUSTFLAGS)' $(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
+	RUSTFLAGS='$(KERNEL_RUSTFLAGS)' AIOS_VERSION='$(AIOS_VERSION)' GIT_HASH='$(GIT_HASH)' \
+		$(CARGO) build --package aios-kernel --target $(TARGET) $(CARGO_PROFILE_FLAG)
 	@echo "make: тесты хоста прошли, ядро собирается"
 
 clean:

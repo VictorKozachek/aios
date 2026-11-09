@@ -15,6 +15,7 @@
 #   KERNEL      — путь к собранному ядру            (обязателен)
 #   LIMINE_DIR  — каталог с BOOTX64.EFI             (обязателен)
 #   CONF        — путь к limine.conf                (по умолчанию build/limine.conf)
+#   WALLPAPER   — фон меню Limine                   (опционально, кладётся как /wallpaper.jpg)
 #   SIZE_MIB    — размер образа в МиБ               (по умолчанию 64)
 
 set -euo pipefail
@@ -23,6 +24,7 @@ IMAGE=${IMAGE:-build/aios.img}
 KERNEL=${KERNEL:-}
 LIMINE_DIR=${LIMINE_DIR:-}
 CONF=${CONF:-build/limine.conf}
+WALLPAPER=${WALLPAPER:-}
 SIZE_MIB=${SIZE_MIB:-64}
 
 die() {
@@ -63,6 +65,16 @@ mmd -i "$tmp_image" ::/EFI ::/EFI/BOOT ::/boot
 mcopy -i "$tmp_image" "$LIMINE_DIR/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$tmp_image" "$CONF" ::/limine.conf
 mcopy -i "$tmp_image" "$KERNEL" ::/boot/kernel
+
+# Wallpaper меню Limine (spec §10.1). В ядро не компилируется; если файла нет
+# в рабочем дереве — образ собирается без фона.
+if [ -n "$WALLPAPER" ]; then
+    if [ -f "$WALLPAPER" ]; then
+        mcopy -i "$tmp_image" "$WALLPAPER" ::/wallpaper.jpg
+    else
+        echo "mkimage: wallpaper не найден: '$WALLPAPER' — образ без wallpaper" >&2
+    fi
+fi
 
 mv "$tmp_image" "$IMAGE"
 
