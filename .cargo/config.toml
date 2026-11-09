@@ -1,4 +1,12 @@
-# Без цели по умолчанию: ядро собирается с --target x86_64-unknown-none,
-# а тесты форматов (libs/*) идут на хосте обычным `cargo test`.
-[alias]
-xtask = "run --package xtask --"
+# Конфигурация сборки AIOS. Файл ведёт лид: он общий для всех крейтов workspace.
+#
+# Цель по умолчанию НЕ задаётся: ядро собирается с `--target x86_64-unknown-none`,
+# а тесты библиотек (libs/*) идут на хосте обычным `cargo test`.
+#
+# Флаги ниже обязательны для ядра: для `x86_64-unknown-none` rustc по умолчанию
+# генерирует position-independent код (вызовы libcore через GOT), а наш линкер-скрипт
+# .got не содержит — получается переход по мусорному адресу (page fault на первом
+# println!). Поэтому фиксируем static relocation model и kernel code model.
+# Без этого прямой `cargo build --target ...` соберёт нерабочее ядро.
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static", "-C", "code-model=kernel"]
