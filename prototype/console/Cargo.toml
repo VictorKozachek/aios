@@ -1,0 +1,14 @@
+[package]
+name = "aios-console"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+aios-modeld = { path = "../modeld" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
