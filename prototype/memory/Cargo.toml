@@ -1,0 +1,17 @@
+[package]
+name = "aios-memory"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+aios-modeld = { path = "../modeld" }
+# Episodic memory format (ARCHITECTURE §5.2): segments with magic/len/crc/seq
+# and the resync reader. The prototype is `std`, the library is `no_std` — both
+# sides use the same on-disk format.
+memfmt = { path = "../../libs/memfmt" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
