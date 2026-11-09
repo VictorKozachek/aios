@@ -1,138 +1,116 @@
-//! Текстовая консоль на framebuffer Limine.
+//! Framebuffer log console for the v1 splash design (T7).
 //!
-//! Рисуем знакогенератором 8×8 (см. `font.rs`) с масштабом 2 на достаточно
-//! больших экранах. При заполнении экрана строки сдвигаются вверх —
-//! простейшая прокрутка без аллокаций.
+//! Text is rendered from the JetBrains Mono glyph atlas (`atlas-jbm15`), not
+//! from the old 8x8 VGA font: the atlas is what makes the boot log look like
+//! the designer's mock instead of "cubes". Geometry and colours follow
+//! `docs/design/splash-spec.md` §4 and §9: the log lives in the 480 px column
+//! below the splash block, one 21 px line at a time, and stops when the area
+//! is full (the console does not scroll over the splash).
 //!
-//! Никакого форматирования здесь нет: консоль получает уже готовые байты.
+//! Serial and debugcon output are untouched: this module only renders the
+//! framebuffer copy of the log.
 
+use crate::assets::atlas_jbm15::{ATLAS_JBM15_ALPHA, ATLAS_JBM15_HEIGHT, ATLAS_JBM15_WIDTH};
 use crate::boot::limine::Framebuffer;
+use crate::draw::{self, Canvas, Mask, Rgb};
+use crate::splash::{LOG_LINE_STEP, LogArea};
 
-use super::font::{FIRST_CHAR, FONT};
-
-/// Сколько байт на пиксель допускаем: 32, 24 и 16 бит.
-const MIN_BPP: u16 = 16;
-const MAX_BPP: u16 = 32;
-
-/// Цвет в формате «упакованный u32 по маскам каналов».
-#[derive(Clone, Copy)]
-struct Rgb(u32);
-
-/// SAFETY: консоль — это указатель на отображённую память framebuffer и
-/// счётчики. Владелец (мьютекс консоли) сериализует доступ, поэтому консоль
-/// можно передавать между потоками.
-unsafe impl Send for FramebufferConsole {}
+/// Atlas cell advance in pixels (`spec §7`).
+const CELL_WIDTH: i32 = 9;
+/// Width of the log column in pixels (`spec §4`).
+const LOG_WIDTH: i32 = 480;
+/// Log text colour: `INK_FAINT` (`spec §2`).
+const LOG_COLOR: Rgb = (0x5c, 0x6b, 0x80);
+const LOG_ALPHA: u8 = 255;
+/// Maximum characters per log line (`spec §4`: 480 px / 9 px).
+const MAX_COLUMNS: usize = (LOG_WIDTH / CELL_WIDTH) as usize;
 
 pub struct FramebufferConsole {
-    base: *mut u8,
-    width: usize,
-    height: usize,
-    pitch: usize,
-    bytes_per_pixel: usize,
-    red_mask_size: u8,
-    red_mask_shift: u8,
-    green_mask_size: u8,
-    green_mask_shift: u8,
-    blue_mask_size: u8,
-    blue_mask_shift: u8,
-    foreground: Rgb,
-    background: Rgb,
-    scale: usize,
-    cell_width: usize,
-    cell_height: usize,
+    canvas: Canvas,
+    area: Option<LogArea>,
     columns: usize,
     rows: usize,
     cursor_column: usize,
     cursor_row: usize,
+    full: bool,
+    /// Current word, buffered so line breaks fall on word boundaries.
+    word: [u8; MAX_COLUMNS],
+    word_len: usize,
 }
 
 impl FramebufferConsole {
-    /// Создать консоль поверх framebuffer загрузчика.
+    /// Creates the console over the bootloader framebuffer.
     ///
-    /// Возвращает `None`, если формат экрана не поддерживается — тогда
-    /// остаются serial и debugcon.
+    /// The log area is configured later, once the splash has computed its
+    /// geometry; until then framebuffer output is ignored (serial/debugcon
+    /// still receive everything).
     pub fn new(framebuffer: &Framebuffer) -> Option<Self> {
-        if framebuffer.address.is_null()
-            || framebuffer.width == 0
-            || framebuffer.height == 0
-            || framebuffer.pitch == 0
-            || framebuffer.bpp < MIN_BPP
-            || framebuffer.bpp > MAX_BPP
-            || framebuffer.bpp % 8 != 0
-        {
-            return None;
-        }
-
-        let bytes_per_pixel = (framebuffer.bpp / 8) as usize;
-        if !matches!(bytes_per_pixel, 2 | 3 | 4) {
-            return None;
-        }
-
-        let scale = if framebuffer.width >= 800 && framebuffer.height >= 600 {
-            2
-        } else {
-            1
-        };
-        let cell_width = 8 * scale;
-        let cell_height = 8 * scale;
-        let columns = framebuffer.width as usize / cell_width;
-        let rows = framebuffer.height as usize / cell_height;
-        if columns == 0 || rows == 0 {
-            return None;
-        }
-
-        let mut console = Self {
-            base: framebuffer.address,
-            width: framebuffer.width as usize,
-            height: framebuffer.height as usize,
-            pitch: framebuffer.pitch as usize,
-            bytes_per_pixel,
-            red_mask_size: framebuffer.red_mask_size,
-            red_mask_shift: framebuffer.red_mask_shift,
-            green_mask_size: framebuffer.green_mask_size,
-            green_mask_shift: framebuffer.green_mask_shift,
-            blue_mask_size: framebuffer.blue_mask_size,
-            blue_mask_shift: framebuffer.blue_mask_shift,
-            foreground: Rgb(0),
-            background: Rgb(0),
-            scale,
-            cell_width,
-            cell_height,
-            columns,
-            rows,
+        let canvas = Canvas::new(framebuffer)?;
+        Some(Self {
+            canvas,
+            area: None,
+            columns: (LOG_WIDTH / CELL_WIDTH) as usize,
+            rows: 0,
             cursor_column: 0,
             cursor_row: 0,
+            full: true,
+            word: [0; MAX_COLUMNS],
+            word_len: 0,
+        })
+    }
+
+    /// Configures the log area below the splash block.
+    pub fn configure_log(&mut self, area: LogArea) {
+        self.area = Some(area);
+        let span = area.last_baseline - area.first_baseline;
+        self.rows = if span < 0 {
+            0
+        } else {
+            (span / LOG_LINE_STEP + 1) as usize
         };
-        console.foreground = Rgb(console.pack(0xff, 0xff, 0xff));
-        console.background = Rgb(console.pack(0x0a, 0x0e, 0x18));
-        console.clear();
-        Some(console)
+        self.columns = (LOG_WIDTH / CELL_WIDTH) as usize;
+        self.cursor_column = 0;
+        self.cursor_row = 0;
+        self.full = self.rows == 0;
+        self.word_len = 0;
     }
 
-    /// Сколько символов помещается в строке.
-    pub fn columns(&self) -> usize {
-        self.columns
-    }
-
-    /// Сколько текстовых строк помещается на экране.
-    pub fn rows(&self) -> usize {
-        self.rows
-    }
-
-    /// Записать байт текста (ASCII; всё остальное рисуется как `?`).
+    /// Writes one byte of text (ASCII; everything else is drawn as `?`).
+    ///
+    /// Words are buffered until a space/newline so long lines wrap on word
+    /// boundaries instead of splitting words mid-token (the v0.1 boot summary
+    /// has lines wider than the 53-column log). Tokens longer than a line are
+    /// hard-broken.
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
-            b'\n' => self.newline(),
-            b'\r' => self.cursor_column = 0,
+            b'\n' => {
+                self.flush_word();
+                self.newline();
+            }
+            b'\r' => {
+                self.flush_word();
+                self.cursor_column = 0;
+            }
             b'\t' => {
                 for _ in 0..4 {
                     self.write_byte(b' ');
                 }
             }
-            0x20..=0x7e => self.write_glyph(byte),
-            // Управляющие символы не рисуем.
+            // Control characters are not rendered.
             0x00..=0x1f => {}
-            _ => self.write_glyph(b'?'),
+            b' ' => {
+                self.flush_word();
+                self.write_space();
+            }
+            _ => {
+                if self.word_len < MAX_COLUMNS {
+                    self.word[self.word_len] = byte;
+                    self.word_len += 1;
+                }
+                if self.word_len == MAX_COLUMNS {
+                    self.flush_word();
+                }
+            }
         }
     }
 
@@ -140,113 +118,82 @@ impl FramebufferConsole {
         self.cursor_column = 0;
         self.cursor_row += 1;
         if self.cursor_row >= self.rows {
-            self.scroll();
-            self.cursor_row = self.rows - 1;
+            self.full = true;
         }
     }
 
-    fn write_glyph(&mut self, byte: u8) {
-        if self.cursor_column >= self.columns {
-            self.newline();
-        }
-
-        let glyph = if (FIRST_CHAR..=super::font::LAST_CHAR).contains(&byte) {
-            &FONT[(byte - FIRST_CHAR) as usize]
-        } else {
-            &FONT[(b'?' - FIRST_CHAR) as usize]
-        };
-
-        let origin_x = self.cursor_column * self.cell_width;
-        let origin_y = self.cursor_row * self.cell_height;
-
-        for (row, bits) in glyph.iter().enumerate() {
-            for column in 0..8 {
-                let on = bits & (1 << column) != 0;
-                if on {
-                    self.fill_rect(
-                        origin_x + column * self.scale,
-                        origin_y + row * self.scale,
-                        self.scale,
-                        self.scale,
-                        self.foreground,
-                    );
-                }
-            }
-        }
-
-        self.cursor_column += 1;
-        if self.cursor_column >= self.columns {
-            self.newline();
-        }
-    }
-
-    /// Сдвинуть содержимое экрана на одну текстовую строку вверх.
-    fn scroll(&mut self) {
-        let line_bytes = self.cell_height * self.pitch;
-        let remaining = self.pitch * self.height - line_bytes;
-
-        // SAFETY: base указывает на отображённый framebuffer размером
-        // height * pitch байт; копируем внутри этого диапазона.
-        unsafe {
-            core::ptr::copy(self.base.add(line_bytes), self.base, remaining);
-        }
-
-        let top = self.height - self.cell_height;
-        self.fill_rect(0, top, self.width, self.cell_height, self.background);
-    }
-
-    /// Очистить экран и вернуть курсор в левый верхний угол.
-    pub fn clear(&mut self) {
-        self.fill_rect(0, 0, self.width, self.height, self.background);
-        self.cursor_column = 0;
-        self.cursor_row = 0;
-    }
-
-    fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: Rgb) {
-        let x_end = (x + width).min(self.width);
-        let y_end = (y + height).min(self.height);
-        for row in y..y_end {
-            for column in x..x_end {
-                self.put_pixel(column, row, color);
-            }
-        }
-    }
-
-    fn put_pixel(&mut self, x: usize, y: usize, color: Rgb) {
-        if x >= self.width || y >= self.height {
+    /// Draws the buffered word, wrapping before it if it does not fit.
+    fn flush_word(&mut self) {
+        if self.word_len == 0 {
             return;
         }
-        let offset = y * self.pitch + x * self.bytes_per_pixel;
-        // SAFETY: offset < height * pitch по проверке выше — в пределах
-        // отображённого буфера framebuffer.
-        unsafe {
-            let pixel = self.base.add(offset);
-            match self.bytes_per_pixel {
-                4 => core::ptr::write(pixel.cast::<u32>(), color.0),
-                3 => {
-                    let bytes = color.0.to_le_bytes();
-                    pixel.write(bytes[0]);
-                    pixel.add(1).write(bytes[1]);
-                    pixel.add(2).write(bytes[2]);
-                }
-                2 => core::ptr::write(pixel.cast::<u16>(), color.0 as u16),
-                _ => {}
+        if self.full {
+            self.word_len = 0;
+            return;
+        }
+        if self.cursor_column > 0 && self.cursor_column + self.word_len > self.columns {
+            self.newline();
+        }
+        let mut index = 0;
+        while index < self.word_len && !self.full {
+            self.draw_glyph(self.word[index]);
+            index += 1;
+            if self.cursor_column >= self.columns {
+                self.newline();
             }
+        }
+        self.word_len = 0;
+    }
+
+    /// Draws one separating space, skipping it when the line just wrapped.
+    fn write_space(&mut self) {
+        if self.full || self.cursor_column == 0 {
+            return;
+        }
+        self.draw_glyph(b' ');
+        if self.cursor_column >= self.columns {
+            self.newline();
         }
     }
 
-    /// Упаковать 8-битные каналы согласно маскам загрузчика.
-    fn pack(&self, red: u8, green: u8, blue: u8) -> u32 {
-        pack_channel(red, self.red_mask_size, self.red_mask_shift)
-            | pack_channel(green, self.green_mask_size, self.green_mask_shift)
-            | pack_channel(blue, self.blue_mask_size, self.blue_mask_shift)
+    /// Draws one glyph at the cursor; wrapping is handled by the callers.
+    fn draw_glyph(&mut self, byte: u8) {
+        if self.full || self.cursor_column >= self.columns {
+            return;
+        }
+        let Some(area) = self.area else {
+            return;
+        };
+        let Some(atlas) = helper_atlas() else {
+            return;
+        };
+        let x = area.left + self.cursor_column as i32 * CELL_WIDTH;
+        let baseline = area.first_baseline + self.cursor_row as i32 * LOG_LINE_STEP;
+        let mut utf8 = [0u8; 4];
+        let character = if (0x20..=0x7e).contains(&byte) {
+            byte as char
+        } else {
+            '?'
+        };
+        let text = character.encode_utf8(&mut utf8);
+        draw::draw_text_atlas(
+            &mut self.canvas,
+            &atlas,
+            text,
+            x,
+            baseline,
+            LOG_COLOR,
+            LOG_ALPHA,
+            0,
+        );
+        self.cursor_column += 1;
     }
 }
 
-fn pack_channel(value: u8, mask_size: u8, mask_shift: u8) -> u32 {
-    if mask_size == 0 || mask_size > 8 {
-        return 0;
-    }
-    let max_value = (1u32 << mask_size) - 1;
-    (u32::from(value) * max_value / 255) << mask_shift
+fn helper_atlas() -> Option<Mask<'static>> {
+    Mask::new(
+        ATLAS_JBM15_WIDTH as usize,
+        ATLAS_JBM15_HEIGHT as usize,
+        ATLAS_JBM15_ALPHA,
+    )
 }
