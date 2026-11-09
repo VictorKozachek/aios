@@ -105,6 +105,10 @@ pub struct BootInfo {
     pub rsdp: Option<u64>,
     /// Частота TSC в герцах.
     pub tsc_hz: Option<u64>,
+    /// Сколько ядер видит загрузчик (включая BSP); 0 — MP недоступен.
+    pub cpu_count: u64,
+    /// LAPIC ID загрузочного процессора.
+    pub bsp_lapic_id: u32,
     /// 32 байта энтропии от загрузчика/железа, если удалось добыть.
     pub entropy: Option<[u8; ENTROPY_BYTES]>,
     /// Источник энтропии.
@@ -129,6 +133,8 @@ impl BootInfo {
             framebuffer: None,
             rsdp: None,
             tsc_hz: None,
+            cpu_count: 0,
+            bsp_lapic_id: 0,
             entropy: None,
             entropy_source: EntropySource::None,
             modules: [Module::EMPTY; MAX_MODULES],
@@ -176,6 +182,11 @@ impl BootInfo {
     /// Есть ли HHDM.
     pub const fn hhdm_available(&self) -> bool {
         self.hhdm.is_some()
+    }
+
+    /// Ответил ли загрузчик на запрос MP (сколько ядер).
+    pub const fn mp_available(&self) -> bool {
+        self.cpu_count > 0
     }
 
     /// Сумма по типам карты памяти.

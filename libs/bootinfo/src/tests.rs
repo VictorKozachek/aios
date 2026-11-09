@@ -42,6 +42,8 @@ fn sample() -> BootInfo {
     });
     info.rsdp = Some(0x07fe_0000);
     info.tsc_hz = Some(2_400_000_000);
+    info.cpu_count = 1;
+    info.bsp_lapic_id = 0;
     info.entropy = Some([0x5a; ENTROPY_BYTES]);
     info.entropy_source = EntropySource::Bootloader;
     info.push_module(Module::new(0x0800_0000, 0x0002_0000, "/boot/initrd.img"));
@@ -377,6 +379,16 @@ fn rsdp_entry_and_kind_are_looked_up_in_memmap() {
 }
 
 #[test]
+fn mp_fields_are_reported() {
+    let info = sample();
+    assert!(info.mp_available());
+    assert_eq!(info.cpu_count, 1);
+    let empty = BootInfo::new();
+    assert!(!empty.mp_available());
+    assert_eq!(empty.cpu_count, 0);
+}
+
+#[test]
 fn paging_mode_and_entropy_source_are_readable() {
     assert_eq!(PagingMode::from_raw(0), PagingMode::FourLevel);
     assert_eq!(PagingMode::from_raw(1), PagingMode::FiveLevel);
@@ -436,11 +448,12 @@ fn summary_text_mentions_every_field() {
     for needle in [
         "memmap: 4 entries",
         "usable",
-        "hhdm: 0xffff800000000000",
+        "HHDM base: 0xffff800000000000",
         "paging: 4-level",
-        "rsdp: 0x0000000007fe0000",
-        "tsc: 2400 MHz (2400000000 Hz)",
+        "RSDP: 0x0000000007fe0000",
+        "TSC: 2400 MHz (2400000000 Hz)",
         "entropy: bootloader",
+        "CPUs: 1 (BSP LAPIC id 0)",
         "framebuffer: 1920x1080, 32 bpp, pitch 7680",
         "modules: 1",
         "/boot/initrd.img",
@@ -456,9 +469,9 @@ fn summary_text_mentions_every_field() {
 fn summary_text_reports_absent_fields() {
     let info = BootInfo::new();
     let text = std::format!("{}", info.summary_display());
-    assert!(text.contains("hhdm: absent"));
-    assert!(text.contains("rsdp: absent"));
-    assert!(text.contains("tsc: absent"));
+    assert!(text.contains("HHDM base: absent"));
+    assert!(text.contains("RSDP: absent"));
+    assert!(text.contains("TSC: absent"));
     assert!(text.contains("framebuffer: absent"));
 }
 

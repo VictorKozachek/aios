@@ -42,28 +42,35 @@ impl fmt::Display for Summary<'_> {
             summary.other / MIB,
         )?;
 
+        // One field per line: the framebuffer console has 80 columns, and
+        // `make smoke` greps for these labels (T1 contract, kept for T2).
         match info.hhdm {
-            Some(offset) => write!(f, "\nhhdm: 0x{offset:016x}")?,
-            None => f.write_str("\nhhdm: absent")?,
+            Some(offset) => write!(f, "\nHHDM base: 0x{offset:016x}")?,
+            None => f.write_str("\nHHDM base: absent")?,
         }
         write!(f, "; paging: {}", info.paging_mode.name())?;
         match info.rsdp {
-            Some(address) => write!(f, "; rsdp: 0x{address:016x}")?,
-            None => f.write_str("; rsdp: absent")?,
+            Some(address) => write!(f, "\nRSDP: 0x{address:016x}")?,
+            None => f.write_str("\nRSDP: absent")?,
         }
         match info.tsc_hz {
-            Some(hz) => write!(f, "; tsc: {} MHz ({} Hz)", hz / 1_000_000, hz)?,
-            None => f.write_str("; tsc: absent")?,
+            Some(hz) => write!(f, "\nTSC: {} MHz ({} Hz)", hz / 1_000_000, hz)?,
+            None => f.write_str("\nTSC: absent")?,
         }
-        write!(f, "; entropy: {}", info.entropy_source.name())?;
+        write!(
+            f,
+            "\nCPUs: {} (BSP LAPIC id {})",
+            info.cpu_count, info.bsp_lapic_id
+        )?;
+        write!(f, "\nentropy: {}", info.entropy_source.name())?;
 
         match info.framebuffer {
             Some(fb) => write!(
                 f,
-                "\nframebuffer: {}x{}, {} bpp, pitch {}",
+                "; framebuffer: {}x{}, {} bpp, pitch {}",
                 fb.width, fb.height, fb.bpp, fb.pitch
             )?,
-            None => f.write_str("\nframebuffer: absent")?,
+            None => f.write_str("; framebuffer: absent")?,
         }
 
         if !info.modules().is_empty() {
