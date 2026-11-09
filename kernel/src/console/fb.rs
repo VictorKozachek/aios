@@ -19,9 +19,11 @@ use crate::splash::{LOG_LINE_STEP, LogArea};
 const CELL_WIDTH: i32 = 9;
 /// Width of the log column in pixels (`spec §4`).
 const LOG_WIDTH: i32 = 480;
-/// Log text colour: `INK_FAINT` at 70 % (`spec §2`).
+/// Log text colour: `INK_FAINT` (`spec §2`).
 const LOG_COLOR: Rgb = (0x5c, 0x6b, 0x80);
 const LOG_ALPHA: u8 = 255;
+/// Maximum characters per log line (`spec §4`: 480 px / 9 px).
+const MAX_COLUMNS: usize = (LOG_WIDTH / CELL_WIDTH) as usize;
 
 pub struct FramebufferConsole {
     canvas: Canvas,
@@ -31,6 +33,9 @@ pub struct FramebufferConsole {
     cursor_column: usize,
     cursor_row: usize,
     full: bool,
+    /// Current word, buffered so line breaks fall on word boundaries.
+    word: [u8; MAX_COLUMNS],
+    word_len: usize,
 }
 
 impl FramebufferConsole {
@@ -49,6 +54,8 @@ impl FramebufferConsole {
             cursor_column: 0,
             cursor_row: 0,
             full: true,
+            word: [0; MAX_COLUMNS],
+            word_len: 0,
         })
     }
 
@@ -65,13 +72,25 @@ impl FramebufferConsole {
         self.cursor_column = 0;
         self.cursor_row = 0;
         self.full = self.rows == 0;
+        self.word_len = 0;
     }
 
     /// Writes one byte of text (ASCII; everything else is drawn as `?`).
+    ///
+    /// Words are buffered until a space/newline so long lines wrap on word
+    /// boundaries instead of splitting words mid-token (the v0.1 boot summary
+    /// has lines wider than the 53-column log). Tokens longer than a line are
+    /// hard-broken.
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
-            b'\n' => self.newline(),
-            b'\r' => self.cursor_column = 0,
+            b'\n' => {
+                self.flush_word();
+                self.newline();
+            }
+            b'\r' => {
+                self.flush_word();
+                self.cursor_column = 0;
+            }
             b'\t' => {
                 for _ in 0..4 {
                     self.write_byte(b' ');
@@ -79,7 +98,19 @@ impl FramebufferConsole {
             }
             // Control characters are not rendered.
             0x00..=0x1f => {}
-            _ => self.write_glyph(byte),
+            b' ' => {
+                self.flush_word();
+                self.write_space();
+            }
+            _ => {
+                if self.word_len < MAX_COLUMNS {
+                    self.word[self.word_len] = byte;
+                    self.word_len += 1;
+                }
+                if self.word_len == MAX_COLUMNS {
+                    self.flush_word();
+                }
+            }
         }
     }
 
@@ -91,19 +122,48 @@ impl FramebufferConsole {
         }
     }
 
-    fn write_glyph(&mut self, byte: u8) {
+    /// Draws the buffered word, wrapping before it if it does not fit.
+    fn flush_word(&mut self) {
+        if self.word_len == 0 {
+            return;
+        }
         if self.full {
+            self.word_len = 0;
+            return;
+        }
+        if self.cursor_column > 0 && self.cursor_column + self.word_len > self.columns {
+            self.newline();
+        }
+        let mut index = 0;
+        while index < self.word_len && !self.full {
+            self.draw_glyph(self.word[index]);
+            index += 1;
+            if self.cursor_column >= self.columns {
+                self.newline();
+            }
+        }
+        self.word_len = 0;
+    }
+
+    /// Draws one separating space, skipping it when the line just wrapped.
+    fn write_space(&mut self) {
+        if self.full || self.cursor_column == 0 {
+            return;
+        }
+        self.draw_glyph(b' ');
+        if self.cursor_column >= self.columns {
+            self.newline();
+        }
+    }
+
+    /// Draws one glyph at the cursor; wrapping is handled by the callers.
+    fn draw_glyph(&mut self, byte: u8) {
+        if self.full || self.cursor_column >= self.columns {
             return;
         }
         let Some(area) = self.area else {
             return;
         };
-        if self.cursor_column >= self.columns {
-            self.newline();
-            if self.full {
-                return;
-            }
-        }
         let Some(atlas) = helper_atlas() else {
             return;
         };
@@ -127,9 +187,6 @@ impl FramebufferConsole {
             0,
         );
         self.cursor_column += 1;
-        if self.cursor_column >= self.columns {
-            self.newline();
-        }
     }
 }
 
