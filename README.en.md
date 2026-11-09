@@ -149,7 +149,7 @@ Detailed exit criteria and estimates live in the
   low-level engineers ≈ 9–12 months, one person — 2.5–4 years. The number comes
   from measurements (800–1300 debugged lines/month, sizes of real drivers), not
   from optimism, and it sits in the specification so it does not surface at the end.
-- The architecture is **not fixed**: open questions (Q1–Q18) are listed in §15 of
+- The architecture is **not fixed**: open questions (Q1–Q23) are listed in §15 of
   the specification. The biggest one is the boot loader: Limine (saves 4–6 PM but
   is third-party) versus our own UEFI loader (fully ours).
 
