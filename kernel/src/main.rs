@@ -15,6 +15,7 @@ mod arch;
 mod boot;
 mod console;
 mod io;
+mod mm;
 
 /// Точка входа ядра. Limine передаёт управление сюда без аргументов.
 #[unsafe(no_mangle)]
@@ -69,6 +70,7 @@ pub extern "C" fn _start() -> ! {
         panic!("invalid BootInfo: {}", error);
     }
     boot::report(&info);
+    mm::init(&info);
 
     println!();
     println!("boot: ok, halting (M0: no scheduler yet)");
