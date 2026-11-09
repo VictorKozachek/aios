@@ -1,0 +1,1 @@
+{"model_info":{"general.architecture":"qwen2","qwen2.context_length":32768,"qwen2.embedding_length":896,"qwen2.block_count":24},"details":{"parent_model":"","format":"gguf","family":"qwen2","families":["qwen2"],"parameter_size":"494.03M","quantization_level":"Q4_K_M"}}
