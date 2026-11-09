@@ -1,0 +1,138 @@
+# AIOS
+
+**An operating system governed by a model. Written from scratch. No Linux.**
+
+> Status: **concept v0.1** — not a single line of code yet, only a specification.
+> License: not chosen yet. Language: [Русский](README.md).
+
+---
+
+## The idea in one paragraph
+
+AIOS is a new operating system in which an **LLM is the system's governing core**,
+not an application running on top of one. The DeepSeek model understands what the
+user wants, plans steps, invokes typed system capabilities (files, services,
+network, itself) and reports back. It talks to humans through a console — the way
+you work with an agent harness — and to programs through a secured HTTP API. The
+kernel is written from scratch: its own ABI, scheduler, file system and network
+stack. No Linux clones and no POSIX layer "for compatibility".
+
+## What that means in practice
+
+| Conventional OS | AIOS |
+|---|---|
+| The administrator knows commands and utilities | The administrator states an intent; the model picks the mechanisms |
+| Inference is a process competing with daemons | Inference is a priority class: resources, memory and cores are reserved for the model |
+| Programs speak POSIX primitives | Programs speak the API and the capability catalog |
+| Rights belong to users and processes | Rights belong to **sessions**: the model proposes, the kernel disposes |
+| Audit is a syslog nobody reads | Audit is the foundation: every model action is recorded with its reason and cost |
+
+## Why not Linux
+
+Linux is not "a new system" — it is a system with 30 years of backward
+compatibility, where an agent has to pretend to be a process and a model has to
+pretend to be a file. AIOS is designed from scratch for the task: the primitives
+"session", "capability", "intent", "plan" are first-class. Plus control: millions
+of lines of foreign code in the trusted base are pointless if the machine is an
+inference appliance.
+
+## Core principles
+
+1. **The model proposes, the kernel disposes.** The model holds no root: every
+   action passes a policy engine, a human (when dangerous) and the audit log.
+2. **Portability from day one.** One code base, many architectures: x86-64 now,
+   aarch64 and RISC-V next, eventually custom silicon. `make image ARCH=…` builds
+   the distribution.
+3. **All resources belong to the model — on a schedule.** Weights and KV-cache are
+   budgeted up front; the system reserve is untouchable.
+4. **Closed by default.** Only explicitly opened ports, only an authenticated API,
+   only allow-listed capabilities.
+5. **A demo at every step.** A milestone without a working demonstration is not a
+   milestone.
+
+## What it looks like
+
+The console is a dialogue with the system, not a TTY running bash:
+
+```
+aios> why did the httpd service die last night?
+
+  [plan] 1. log.query: events 02:00–06:00, level error
+         2. metric.query: memory and CPU for the same window
+         3. report to the human, change nothing
+
+  [policy] log.query, metric.query → allowed (read-only)
+  [audit]  audit://sess-42/steps/1-2
+
+The service died at 03:14 while allocating 512 MB — the service pool was exhausted
+by a background indexing job. The model was idle at the time. Suggestion: cap the
+indexer to the background pool — apply? (yes/no)
+```
+
+## Hardware and model (MVP contract)
+
+The MVP pins **one board** — writing drivers for every piece of hardware in the
+world is pointless:
+
+| Parameter | MVP value |
+|---|---|
+| Platform | x86-64, UEFI, AMD Ryzen 9 (AM5, Zen 5, AVX-512 VNNI/BF16) |
+| Memory | 128 GB DDR5-5600 (2 channels, ≈ 90 GB/s — this is the speed ceiling) |
+| Storage | NVMe ≥ 2 TB |
+| Models | dense 7–14B for the dev loop; **DeepSeek-V4-Flash (291B/13B active, 82–97 GB) as the flagship** — 7–10 tok/s |
+| Not supported | the 671B family (needs 260–450 GB and 8–12 memory channels), GPU/NPU offload |
+
+Generation speed is bounded by memory bandwidth, not by the CPU:
+`tok/s ≈ 0.63 × BW / weight size` for dense models and `≈ 0.35 × BW / active
+params` for MoE. That is what drives model selection.
+
+## Repository layout
+
+```
+README.md                      — Russian version
+README.en.md                   — this file
+docs/SPECIFICATION.md          — specification: concept, requirements, options, roadmap
+docs/research/deepseek-hw-facts.md   — models/hardware: sizes, quantizations, tok/s measurements
+docs/research/aios-tech-facts.md     — boot, drivers, stack, effort estimates
+```
+
+The personal source note (`spec.md`) never enters the repository — it is listed in
+`.gitignore`. The public statement of the idea is the specification only.
+
+## Roadmap
+
+| Milestone | Outcome |
+|---|---|
+| M0. Metal | kernel boots on real hardware (boot strategy — Q17), memory and output |
+| M1. Kernel | SMP, preemptive scheduler, own syscall ABI, processes |
+| M2. Storage | NVMe driver, own journaling FS, weight store |
+| M3. Network | NIC driver, TCP/IP, DHCP, own HTTP server |
+| M4. Inference | own engine, 7–8B, SIMD, KV-cache, OpenAI-compatible streaming |
+| M5. Provisioning | first boot: download model, verify signature, raise the API |
+| M6. Control plane | capability catalog, policy, audit, console — the model runs the system |
+| M7. Portability | aarch64/RISC-V ports, multi-architecture distribution builds |
+
+Detailed exit criteria and estimates live in the
+[specification](docs/SPECIFICATION.md).
+
+## Honest status
+
+- This is a **concept**, not a working system. There is no code.
+- The path to an MVP demo is estimated at **30–45 person-months**: a team of 4–6
+  low-level engineers ≈ 9–12 months, one person — 2.5–4 years. The number comes
+  from measurements (800–1300 debugged lines/month, sizes of real drivers), not
+  from optimism, and it sits in the specification so it does not surface at the end.
+- The architecture is **not fixed**: open questions (Q1–Q18) are listed in §15 of
+  the specification. The biggest one is the boot loader: Limine (saves 4–6 PM but
+  is third-party) versus our own UEFI loader (fully ours).
+
+## Contributing
+
+It is too early to write code — architecture first. But welcome: reasoned critique
+of the specification, benchmarks on target hardware, links to relevant
+implementations (bare-metal inference, Rust OSes, MoE on CPU).
+
+## License
+
+Not chosen yet. No code is published before a license is selected. DeepSeek
+weights (R1, V4) are MIT; llama.cpp/ggml are MIT.
