@@ -3,15 +3,25 @@
 //! The allocator works over a list of abstract, page-aligned frame ranges
 //! (typically taken from the bootloader memory map). It knows nothing about
 //! the real memory map, MMIO or the CPU: seeding it and programming the
-//! hardware belongs to the kernel (task #005b).
+//! hardware belongs to the kernel (task #015).
 //!
 //! Supported orders are 0..=[`MAX_BUDDY_ORDER`], i.e. 4 KiB .. 1 GiB.
-//! Free blocks live in a fixed-size, address-sorted table, so the allocator
-//! itself is allocation-free (`no_std`, no global allocator).
+//! All bookkeeping lives in fixed-size tables, so the allocator itself is
+//! allocation-free (`no_std`, no global allocator):
+//!
+//! * [`MAX_FREE_BLOCKS`] bounds free-space fragmentation;
+//! * [`MAX_ALLOCATIONS`] bounds how many live blocks are tracked at once.
+//!
+//! Live allocations are tracked explicitly. This is what lets
+//! [`BuddyAllocator::free`] reject a double free, a wrong-order free or
+//! freeing a sub-block of a live allocation with [`MmError::UnknownBlock`]
+//! instead of silently corrupting the accounting: a buddy allocator alone
+//! cannot tell a 4 KiB block inside a live 8 KiB allocation from a real
+//! 4 KiB allocation.
 
 use crate::addr::{
-    MAX_BUDDY_BLOCK_SIZE, MAX_BUDDY_ORDER, ORDER_COUNT, PAGE_SIZE, PhysAddr, is_power_of_two,
-    order_to_size, size_to_order,
+    MAX_BUDDY_BLOCK_SIZE, MAX_BUDDY_ORDER, ORDER_COUNT, PAGE_SHIFT, PAGE_SIZE, PhysAddr,
+    is_power_of_two, order_to_size, size_to_order,
 };
 use crate::error::MmError;
 
@@ -20,6 +30,13 @@ use crate::error::MmError;
 /// A pool whose free space is fragmented into more blocks than this reports
 /// [`MmError::TooManyFreeBlocks`] instead of silently losing memory.
 pub const MAX_FREE_BLOCKS: usize = 8192;
+
+/// Maximum number of live allocations the allocator can track at once.
+///
+/// The allocation table is what makes `free` validate `(addr, order)` exactly.
+/// A pool with more live blocks than this reports [`MmError::TooManyAllocations`];
+/// task #015 may size this for the real 64 GiB map.
+pub const MAX_ALLOCATIONS: usize = 16384;
 
 /// Maximum number of frame ranges an allocator can hold.
 pub const MAX_RANGES: usize = 16;
@@ -132,20 +149,23 @@ impl Stats {
     }
 }
 
-#[derive(Clone, Copy)]
-struct FreeBlock {
+/// A buddy block: base address and order (`size == 4 KiB << order`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Block {
     addr: u64,
     order: u8,
 }
 
-impl FreeBlock {
+impl Block {
     const EMPTY: Self = Self { addr: 0, order: 0 };
 }
 
 /// A buddy allocator over abstract physical frame ranges.
 pub struct BuddyAllocator {
-    blocks: [FreeBlock; MAX_FREE_BLOCKS],
-    block_count: usize,
+    free_blocks: [Block; MAX_FREE_BLOCKS],
+    free_count: usize,
+    allocations: [Block; MAX_ALLOCATIONS],
+    alloc_count: usize,
     ranges: [FrameRange; MAX_RANGES],
     range_count: usize,
     total_bytes: u64,
@@ -156,8 +176,10 @@ impl BuddyAllocator {
     /// Creates an empty allocator with no ranges.
     pub const fn new() -> Self {
         Self {
-            blocks: [FreeBlock::EMPTY; MAX_FREE_BLOCKS],
-            block_count: 0,
+            free_blocks: [Block::EMPTY; MAX_FREE_BLOCKS],
+            free_count: 0,
+            allocations: [Block::EMPTY; MAX_ALLOCATIONS],
+            alloc_count: 0,
             ranges: [FrameRange {
                 base: PhysAddr::new(0),
                 len: 0,
@@ -171,15 +193,13 @@ impl BuddyAllocator {
     /// Adds a frame range and turns its bytes into free buddy blocks.
     ///
     /// Ranges must not overlap; adjacent ranges stay separate, so blocks are
-    /// never merged across a range boundary.
+    /// never merged across a range boundary. A range larger than the largest
+    /// buddy block (1 GiB) is carved into several blocks, so its free-block
+    /// demand is counted up front: a range that does not fit into the free
+    /// table is rejected without touching the allocator state.
     pub fn add_range(&mut self, range: FrameRange) -> Result<(), MmError> {
         if self.range_count == MAX_RANGES {
             return Err(MmError::TooManyRanges);
-        }
-        // Every range adds at most ORDER_COUNT blocks; check once, so that a
-        // failure cannot leave the allocator half-updated.
-        if self.block_count + ORDER_COUNT > MAX_FREE_BLOCKS {
-            return Err(MmError::TooManyFreeBlocks);
         }
         let start = range.base().as_u64();
         let end = range.end();
@@ -187,6 +207,25 @@ impl BuddyAllocator {
             if start < existing.end() && existing.base().as_u64() < end {
                 return Err(MmError::RangeOverlap);
             }
+        }
+
+        // Count the blocks first: even a perfectly valid 64 GiB range needs
+        // 64 free-block entries, so a fixed `ORDER_COUNT` allowance is wrong.
+        // Nothing below may fail after the first mutation.
+        let mut cursor = start;
+        let mut remaining = range.len();
+        let mut needed = 0usize;
+        while remaining > 0 {
+            let size = largest_aligned_block(cursor, remaining.min(MAX_BUDDY_BLOCK_SIZE));
+            if size_to_order(size).is_none() {
+                return Err(MmError::InvalidAlignment);
+            }
+            needed += 1;
+            if self.free_count + needed > MAX_FREE_BLOCKS {
+                return Err(MmError::TooManyFreeBlocks);
+            }
+            cursor += size;
+            remaining -= size;
         }
 
         // Keep the range list sorted by base address.
@@ -207,19 +246,16 @@ impl BuddyAllocator {
         self.total_bytes += range.len();
         self.free_bytes += range.len();
 
-        // Carve the range into maximal aligned power-of-two blocks.
         let mut cursor = start;
         let mut remaining = range.len();
         while remaining > 0 {
             let size = largest_aligned_block(cursor, remaining.min(MAX_BUDDY_BLOCK_SIZE));
-            let order = match size_to_order(size) {
-                Some(order) => order,
-                None => return Err(MmError::InvalidAlignment),
-            };
-            self.insert_sorted(FreeBlock {
+            debug_assert!(size_to_order(size).is_some());
+            let order = (size.trailing_zeros() - PAGE_SHIFT) as u8;
+            self.insert_free(Block {
                 addr: cursor,
                 order,
-            })?;
+            });
             cursor += size;
             remaining -= size;
         }
@@ -236,13 +272,13 @@ impl BuddyAllocator {
 
         // Pick the smallest suitable order (lowest address on ties).
         let mut best: Option<usize> = None;
-        for i in 0..self.block_count {
-            let block = self.blocks[i];
+        for i in 0..self.free_count {
+            let block = self.free_blocks[i];
             if block.order < order {
                 continue;
             }
             match best {
-                Some(j) if self.blocks[j].order <= block.order => {}
+                Some(j) if self.free_blocks[j].order <= block.order => {}
                 _ => best = Some(i),
             }
         }
@@ -251,27 +287,35 @@ impl BuddyAllocator {
             None => return Err(MmError::OutOfMemory),
         };
 
-        let candidate = self.blocks[index];
+        // Capacity checks happen before any mutation: a refused allocation
+        // must not change the free list or the allocation table.
+        let candidate = self.free_blocks[index];
+        if self.alloc_count == MAX_ALLOCATIONS {
+            return Err(MmError::TooManyAllocations);
+        }
         let splits = (candidate.order - order) as usize;
-        if self.block_count - 1 + splits > MAX_FREE_BLOCKS {
+        if self.free_count - 1 + splits > MAX_FREE_BLOCKS {
             return Err(MmError::TooManyFreeBlocks);
         }
-        self.remove_at(index);
 
+        self.remove_free_at(index);
         let mut current_order = candidate.order;
         while current_order > order {
             current_order -= 1;
-            let half = match order_to_size(current_order) {
-                Some(size) => size,
-                None => return Err(MmError::InvalidOrder),
-            };
-            self.insert_sorted(FreeBlock {
+            debug_assert!(current_order < MAX_BUDDY_ORDER);
+            let half = PAGE_SIZE << current_order;
+            self.insert_free(Block {
                 addr: candidate.addr + half,
                 order: current_order,
-            })?;
+            });
         }
 
         self.free_bytes -= size;
+        self.insert_allocation(Block {
+            addr: candidate.addr,
+            order,
+        });
+        debug_assert!(self.free_bytes <= self.total_bytes);
         Ok(PhysAddr::new(candidate.addr))
     }
 
@@ -290,8 +334,10 @@ impl BuddyAllocator {
 
     /// Frees a block returned by [`Self::alloc`].
     ///
-    /// Merges with free buddies up to the range boundary. Freeing a block that
-    /// is not allocated (including a double free) returns [`MmError::UnknownBlock`].
+    /// The pair `(addr, order)` must name a live allocation exactly: a double
+    /// free, a wrong order, or a sub-block of a larger allocation is rejected
+    /// with [`MmError::UnknownBlock`]. On success the block is merged with free
+    /// buddies up to the range boundary.
     pub fn free(&mut self, addr: PhysAddr, order: u8) -> Result<(), MmError> {
         let size = match order_to_size(order) {
             Some(size) => size,
@@ -307,26 +353,28 @@ impl BuddyAllocator {
             Some(end) if end <= range_end => {}
             _ => return Err(MmError::UnknownBlock),
         }
-        if self.find_containing(start).is_some() {
-            return Err(MmError::UnknownBlock);
-        }
 
-        // Plan the merges without touching the table, then apply them.
+        // The allocation table is the source of truth for what may be freed.
+        let allocation_index = self
+            .find_allocation(start, order)
+            .ok_or(MmError::UnknownBlock)?;
+        debug_assert!(self.find_free_containing(start).is_none());
+
+        // Plan the merges without touching the tables, then apply them. A
+        // capacity refusal must leave the allocator state untouched.
         let mut merged = [0u64; ORDER_COUNT];
         let mut merged_count = 0usize;
         let mut current_addr = start;
         let mut current_order = order;
         while current_order < MAX_BUDDY_ORDER {
-            let block_size = match order_to_size(current_order) {
-                Some(size) => size,
-                None => return Err(MmError::InvalidOrder),
-            };
+            debug_assert!(current_order < MAX_BUDDY_ORDER);
+            let block_size = PAGE_SIZE << current_order;
             let buddy = current_addr ^ block_size;
             if !self.same_range(current_addr, buddy) {
                 break;
             }
-            match self.find_block(buddy) {
-                Some(index) if self.blocks[index].order == current_order => {
+            match self.find_free(buddy) {
+                Some(index) if self.free_blocks[index].order == current_order => {
                     merged[merged_count] = buddy;
                     merged_count += 1;
                     current_addr = current_addr.min(buddy);
@@ -336,18 +384,20 @@ impl BuddyAllocator {
             }
         }
 
-        if self.block_count - merged_count + 1 > MAX_FREE_BLOCKS {
+        if self.free_count - merged_count + 1 > MAX_FREE_BLOCKS {
             return Err(MmError::TooManyFreeBlocks);
         }
+        self.remove_allocation_at(allocation_index);
         for buddy in &merged[..merged_count] {
-            let index = self.find_block(*buddy).ok_or(MmError::UnknownBlock)?;
-            self.remove_at(index);
+            let index = self.find_free(*buddy).ok_or(MmError::UnknownBlock)?;
+            self.remove_free_at(index);
         }
-        self.insert_sorted(FreeBlock {
+        self.insert_free(Block {
             addr: current_addr,
             order: current_order,
-        })?;
+        });
         self.free_bytes += size;
+        debug_assert!(self.free_bytes <= self.total_bytes);
         Ok(())
     }
 
@@ -379,9 +429,14 @@ impl BuddyAllocator {
         self.total_bytes - self.free_bytes
     }
 
-    /// Number of free blocks in the internal table.
+    /// Number of free blocks in the internal free table.
     pub fn free_block_count(&self) -> usize {
-        self.block_count
+        self.free_count
+    }
+
+    /// Number of live allocations tracked by the allocator.
+    pub fn allocated_block_count(&self) -> usize {
+        self.alloc_count
     }
 
     /// Returns `true` if `addr` lies inside one of the configured ranges.
@@ -400,7 +455,7 @@ impl BuddyAllocator {
         for (order, slot) in orders.iter_mut().enumerate() {
             slot.order = order as u8;
         }
-        for block in &self.blocks[..self.block_count] {
+        for block in &self.free_blocks[..self.free_count] {
             let slot = &mut orders[block.order as usize];
             slot.blocks += 1;
             slot.bytes += order_to_size(block.order).unwrap_or(0);
@@ -412,62 +467,61 @@ impl BuddyAllocator {
         }
     }
 
-    fn insert_sorted(&mut self, block: FreeBlock) -> Result<(), MmError> {
-        if self.block_count >= MAX_FREE_BLOCKS {
-            return Err(MmError::TooManyFreeBlocks);
-        }
+    fn insert_free(&mut self, block: Block) {
+        debug_assert!(self.free_count < MAX_FREE_BLOCKS);
+        debug_assert!(order_to_size(block.order).is_some());
         let mut lo = 0usize;
-        let mut hi = self.block_count;
+        let mut hi = self.free_count;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if self.blocks[mid].addr < block.addr {
+            if self.free_blocks[mid].addr < block.addr {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        if lo < self.block_count && self.blocks[lo].addr == block.addr {
-            return Err(MmError::UnknownBlock);
-        }
-        let end = self.block_count;
-        self.blocks.copy_within(lo..end, lo + 1);
-        self.blocks[lo] = block;
-        self.block_count += 1;
-        Ok(())
+        debug_assert!(
+            lo == self.free_count || self.free_blocks[lo].addr != block.addr,
+            "duplicate free block"
+        );
+        let end = self.free_count;
+        self.free_blocks.copy_within(lo..end, lo + 1);
+        self.free_blocks[lo] = block;
+        self.free_count += 1;
     }
 
-    fn remove_at(&mut self, index: usize) -> FreeBlock {
-        let block = self.blocks[index];
-        let end = self.block_count;
-        self.blocks.copy_within(index + 1..end, index);
-        self.block_count -= 1;
+    fn remove_free_at(&mut self, index: usize) -> Block {
+        let block = self.free_blocks[index];
+        let end = self.free_count;
+        self.free_blocks.copy_within(index + 1..end, index);
+        self.free_count -= 1;
         block
     }
 
-    fn find_block(&self, addr: u64) -> Option<usize> {
+    fn find_free(&self, addr: u64) -> Option<usize> {
         let mut lo = 0usize;
-        let mut hi = self.block_count;
+        let mut hi = self.free_count;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if self.blocks[mid].addr < addr {
+            if self.free_blocks[mid].addr < addr {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        if lo < self.block_count && self.blocks[lo].addr == addr {
+        if lo < self.free_count && self.free_blocks[lo].addr == addr {
             Some(lo)
         } else {
             None
         }
     }
 
-    fn find_containing(&self, addr: u64) -> Option<usize> {
+    fn find_free_containing(&self, addr: u64) -> Option<usize> {
         let mut lo = 0usize;
-        let mut hi = self.block_count;
+        let mut hi = self.free_count;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if self.blocks[mid].addr <= addr {
+            if self.free_blocks[mid].addr <= addr {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -477,13 +531,33 @@ impl BuddyAllocator {
             return None;
         }
         let index = lo - 1;
-        let block = self.blocks[index];
+        let block = self.free_blocks[index];
         let size = order_to_size(block.order)?;
         if addr < block.addr + size {
             Some(index)
         } else {
             None
         }
+    }
+
+    fn insert_allocation(&mut self, block: Block) {
+        debug_assert!(self.alloc_count < MAX_ALLOCATIONS);
+        debug_assert!(self.find_allocation(block.addr, block.order).is_none());
+        self.allocations[self.alloc_count] = block;
+        self.alloc_count += 1;
+    }
+
+    fn remove_allocation_at(&mut self, index: usize) -> Block {
+        let block = self.allocations[index];
+        self.alloc_count -= 1;
+        self.allocations[index] = self.allocations[self.alloc_count];
+        block
+    }
+
+    fn find_allocation(&self, addr: u64, order: u8) -> Option<usize> {
+        self.allocations[..self.alloc_count]
+            .iter()
+            .position(|block| block.addr == addr && block.order == order)
     }
 
     fn range_index(&self, addr: u64) -> Option<usize> {
@@ -546,28 +620,81 @@ mod tests {
         allocator
     }
 
+    /// Checks the accounting invariants: statistics, free/allocation sums,
+    /// alignment, and that no live allocation overlaps a free block.
     fn assert_stats_consistent(allocator: &BuddyAllocator) {
         let stats = allocator.stats();
-        let sum: u64 = stats.orders.iter().map(|order| order.bytes).sum();
+        let free_sum: u64 = stats.orders.iter().map(|order| order.bytes).sum();
         assert_eq!(
-            sum, stats.free_bytes,
-            "free bytes must equal the sum of per-order pools"
+            free_sum, stats.free_bytes,
+            "free bytes must match the per-order pools"
         );
+        assert_eq!(stats.allocated_bytes(), allocator.allocated_bytes());
+
+        let alloc_sum: u64 = allocator.allocations[..allocator.alloc_count]
+            .iter()
+            .map(|block| order_to_size(block.order).expect("valid order"))
+            .sum();
         assert_eq!(
+            alloc_sum,
             stats.allocated_bytes(),
-            stats.total_bytes - stats.free_bytes
+            "allocation bytes must match accounting"
         );
-        let blocks: u32 = stats.orders.iter().map(|order| order.blocks).sum();
-        assert_eq!(blocks as usize, allocator.free_block_count());
-        for (index, block) in allocator.blocks[..allocator.block_count].iter().enumerate() {
+        assert_eq!(stats.total_bytes, stats.free_bytes + alloc_sum);
+
+        let free_blocks: u32 = stats.orders.iter().map(|order| order.blocks).sum();
+        assert_eq!(free_blocks as usize, allocator.free_count);
+        assert_eq!(
+            allocator.alloc_count,
+            allocator.allocations[..allocator.alloc_count].len()
+        );
+
+        for block in &allocator.free_blocks[..allocator.free_count] {
             let size = order_to_size(block.order).expect("valid order");
             assert_eq!(
                 block.addr & (size - 1),
                 0,
                 "free block must be aligned to its order"
             );
-            assert_eq!(allocator.find_block(block.addr), Some(index));
-            assert_eq!(allocator.find_containing(block.addr), Some(index));
+            assert_eq!(
+                allocator.find_free(block.addr),
+                allocator.find_free_containing(block.addr)
+            );
+        }
+        for block in &allocator.allocations[..allocator.alloc_count] {
+            let size = order_to_size(block.order).expect("valid order");
+            assert_eq!(
+                block.addr & (size - 1),
+                0,
+                "allocation must be aligned to its order"
+            );
+            assert!(
+                allocator.find_free_containing(block.addr).is_none(),
+                "live allocation overlaps a free block"
+            );
+            assert!(allocator.contains(PhysAddr::new(block.addr)));
+        }
+    }
+
+    /// Checks that live allocations do not overlap each other (O(n log n)).
+    fn assert_no_overlaps(allocator: &BuddyAllocator) {
+        let mut intervals: Vec<(u64, u64)> = allocator.allocations[..allocator.alloc_count]
+            .iter()
+            .map(|block| {
+                (
+                    block.addr,
+                    block.addr + order_to_size(block.order).expect("valid order"),
+                )
+            })
+            .collect();
+        intervals.sort_unstable();
+        for pair in intervals.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].0,
+                "live allocations overlap: {:?} and {:?}",
+                pair[0],
+                pair[1]
+            );
         }
     }
 
@@ -602,6 +729,7 @@ mod tests {
         let allocator = BuddyAllocator::default();
         assert_eq!(allocator.total_bytes(), 0);
         assert_eq!(allocator.free_block_count(), 0);
+        assert_eq!(allocator.allocated_block_count(), 0);
     }
 
     #[test]
@@ -627,12 +755,14 @@ mod tests {
         let addr = allocator.alloc(0).expect("page available");
         assert!(addr.is_page_aligned());
         assert_eq!(allocator.allocated_bytes(), PAGE_SIZE);
+        assert_eq!(allocator.allocated_block_count(), 1);
         assert_eq!(allocator.free_bytes(), total - PAGE_SIZE);
         assert_stats_consistent(&allocator);
 
         allocator.free(addr, 0).expect("block was allocated");
         assert_eq!(allocator.free_bytes(), total);
         assert_eq!(allocator.allocated_bytes(), 0);
+        assert_eq!(allocator.allocated_block_count(), 0);
         assert_eq!(allocator.free_block_count(), 1);
         assert_eq!(allocator.stats().largest_free_order(), Some(14));
         assert_stats_consistent(&allocator);
@@ -646,13 +776,16 @@ mod tests {
         let addr = allocator.alloc(2).expect("16 KiB available");
         assert_eq!(addr, PhysAddr::new(0));
         assert_eq!(allocator.allocated_bytes(), 16 * 1024);
+        assert_eq!(allocator.allocated_block_count(), 1);
         // Splitting leaves the buddy half of every split order on the free list.
         assert_eq!(allocator.stats().blocks_at(2), 1);
+        assert_stats_consistent(&allocator);
 
         allocator.free(addr, 2).expect("block was allocated");
         assert_eq!(allocator.free_bytes(), total);
         assert_eq!(allocator.free_block_count(), 1);
         assert_eq!(allocator.stats().blocks_at(8), 1);
+        assert_eq!(allocator.allocated_block_count(), 0);
         assert_stats_consistent(&allocator);
     }
 
@@ -660,22 +793,26 @@ mod tests {
     fn allocate_every_page_and_return_them() {
         let mut allocator = allocator(0, 64 * 1024 * 1024);
         let total = allocator.free_bytes();
-        let pages = 64 * 1024 * 1024 / PAGE_SIZE;
+        let pages = total / PAGE_SIZE;
 
-        let mut addrs = Vec::new();
+        let mut addrs = Vec::with_capacity(pages as usize);
         for _ in 0..pages {
             addrs.push(allocator.alloc(0).expect("page available"));
         }
         assert_eq!(allocator.free_bytes(), 0);
+        assert_eq!(allocator.allocated_block_count(), pages as usize);
         assert_eq!(allocator.alloc(0), Err(MmError::OutOfMemory));
-        assert_eq!(addrs.len(), pages as usize);
+        assert_no_overlaps(&allocator);
 
-        for addr in addrs {
-            allocator.free(addr, 0).expect("block was allocated");
+        // Free in reverse allocation order: the allocation table is a stack,
+        // and adjacent pages coalesce back into one 64 MiB block.
+        for addr in addrs.iter().rev() {
+            allocator.free(*addr, 0).expect("block was allocated");
         }
         assert_eq!(allocator.free_bytes(), total);
         assert_eq!(allocator.free_block_count(), 1);
         assert_eq!(allocator.stats().blocks_at(14), 1);
+        assert_eq!(allocator.allocated_block_count(), 0);
         assert_stats_consistent(&allocator);
     }
 
@@ -686,7 +823,7 @@ mod tests {
         let mut live: Vec<(PhysAddr, u8)> = Vec::new();
         let mut seed = 0x1234_5678_9abc_def0u64;
 
-        for _ in 0..5000 {
+        for i in 0..5000 {
             seed = seed
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
@@ -695,6 +832,18 @@ mod tests {
             match allocator.alloc(order) {
                 Ok(addr) => {
                     assert!(addr.is_aligned_to(pages * PAGE_SIZE));
+                    let size = order_to_size(order).expect("valid order");
+                    let start = addr.as_u64();
+                    let end = start + size;
+                    for (other, other_order) in &live {
+                        let other_start = other.as_u64();
+                        let other_end =
+                            other_start + order_to_size(*other_order).expect("valid order");
+                        assert!(
+                            end <= other_start || other_end <= start,
+                            "allocations overlap: [{start:#x},{end:#x}) and [{other_start:#x},{other_end:#x})"
+                        );
+                    }
                     live.push((addr, order));
                 }
                 Err(MmError::OutOfMemory) => {
@@ -708,7 +857,9 @@ mod tests {
                 }
                 Err(other) => panic!("unexpected error: {other}"),
             }
-            assert_stats_consistent(&allocator);
+            if i % 100 == 0 {
+                assert_stats_consistent(&allocator);
+            }
         }
 
         for (addr, order) in live {
@@ -718,6 +869,7 @@ mod tests {
         assert_eq!(allocator.free_block_count(), 1);
         assert_eq!(allocator.stats().largest_free_order(), Some(13));
         assert_stats_consistent(&allocator);
+        assert_no_overlaps(&allocator);
     }
 
     #[test]
@@ -735,12 +887,44 @@ mod tests {
         let addr = allocator.alloc(0).expect("page");
         allocator.free(addr, 0).expect("first free");
         assert_eq!(allocator.free(addr, 0), Err(MmError::UnknownBlock));
-        // Freeing an address that lies inside a coalesced free block is also wrong.
         assert_eq!(
             allocator.free(PhysAddr::new(PAGE_SIZE), 0),
             Err(MmError::UnknownBlock)
         );
         assert_eq!(allocator.free_bytes(), 64 * 1024);
+        assert_eq!(allocator.allocated_block_count(), 0);
+    }
+
+    #[test]
+    fn wrong_order_and_sub_block_frees_are_rejected() {
+        let mut allocator = allocator(0, 64 * 1024);
+        let big = allocator.alloc(1).expect("8 KiB block");
+        assert_eq!(big, PhysAddr::new(0));
+
+        // Neither a 4 KiB block at the base nor a sub-block is the live allocation.
+        assert_eq!(allocator.free(big, 0), Err(MmError::UnknownBlock));
+        assert_eq!(
+            allocator.free(PhysAddr::new(PAGE_SIZE), 0),
+            Err(MmError::UnknownBlock)
+        );
+        assert_eq!(allocator.allocated_bytes(), 8 * 1024);
+        assert_eq!(allocator.allocated_block_count(), 1);
+
+        // The failed frees must not have changed the allocator: a fresh page
+        // cannot fall inside the live 8 KiB block.
+        let page = allocator.alloc(0).expect("page available");
+        assert!(
+            page.as_u64() >= 8 * 1024,
+            "page {page:?} overlaps the live block"
+        );
+        assert_eq!(allocator.allocated_block_count(), 2);
+
+        allocator.free(page, 0).expect("block was allocated");
+        allocator.free(big, 1).expect("block was allocated");
+        assert_eq!(allocator.free_bytes(), 64 * 1024);
+        assert_eq!(allocator.free_block_count(), 1);
+        assert_eq!(allocator.stats().blocks_at(4), 1);
+        assert_stats_consistent(&allocator);
     }
 
     #[test]
@@ -819,6 +1003,113 @@ mod tests {
             .expect("block was allocated");
         assert_eq!(allocator.free_bytes(), 1024 * 1024 * 1024);
         assert_eq!(allocator.stats().blocks_at(MAX_BUDDY_ORDER), 1);
+        assert_stats_consistent(&allocator);
+    }
+
+    #[test]
+    fn range_larger_than_one_gib_decomposes_into_blocks() {
+        // A realistic 64 GiB range (the MVP machine has 64 GiB of RAM).
+        let base = 4 * 1024 * 1024 * 1024u64;
+        let len = 64 * 1024 * 1024 * 1024u64;
+        let mut allocator = allocator(base, len);
+        assert_eq!(allocator.total_bytes(), len);
+        assert_eq!(allocator.free_bytes(), len);
+        assert_eq!(allocator.free_block_count(), 64);
+        assert_eq!(allocator.stats().blocks_at(MAX_BUDDY_ORDER), 64);
+        assert_stats_consistent(&allocator);
+
+        let addr = allocator.alloc(MAX_BUDDY_ORDER).expect("1 GiB block");
+        assert_eq!(addr, PhysAddr::new(base));
+        assert_eq!(allocator.allocated_bytes(), 1024 * 1024 * 1024);
+        allocator
+            .free(addr, MAX_BUDDY_ORDER)
+            .expect("block was allocated");
+        assert_eq!(allocator.free_block_count(), 64);
+        assert_stats_consistent(&allocator);
+    }
+
+    #[test]
+    fn add_range_failure_is_atomic() {
+        let mut allocator = allocator(0, 64 * 1024 * 1024);
+        let pages = allocator.total_bytes() / PAGE_SIZE;
+
+        let mut addrs = Vec::with_capacity(pages as usize);
+        for _ in 0..pages {
+            addrs.push(allocator.alloc(0).expect("page available"));
+        }
+        // Free every other page: 8192 isolated 4 KiB free blocks fill the
+        // free-block table to capacity.
+        for (index, addr) in addrs.iter().enumerate().rev() {
+            if index % 2 == 0 {
+                allocator.free(*addr, 0).expect("block was allocated");
+            }
+        }
+        assert_eq!(allocator.free_block_count(), MAX_FREE_BLOCKS);
+        let total_before = allocator.total_bytes();
+        let free_before = allocator.free_bytes();
+        let ranges_before = allocator.ranges().len();
+
+        // A 64 GiB range needs 64 blocks; the table is full, so this must fail
+        // without touching ranges or byte counters.
+        let huge = FrameRange::new(
+            PhysAddr::new(4 * 1024 * 1024 * 1024),
+            64 * 1024 * 1024 * 1024,
+        )
+        .expect("valid range");
+        assert_eq!(allocator.add_range(huge), Err(MmError::TooManyFreeBlocks));
+
+        assert_eq!(allocator.ranges().len(), ranges_before);
+        assert_eq!(allocator.total_bytes(), total_before);
+        assert_eq!(allocator.free_bytes(), free_before);
+        assert_eq!(allocator.free_block_count(), MAX_FREE_BLOCKS);
+        assert_stats_consistent(&allocator);
+    }
+
+    #[test]
+    fn too_many_ranges_is_reported() {
+        let mut allocator = BuddyAllocator::new();
+        for index in 0..MAX_RANGES {
+            let base = PhysAddr::new((index as u64) * PAGE_SIZE);
+            allocator
+                .add_range(FrameRange::new(base, PAGE_SIZE).expect("range"))
+                .expect("range fits");
+        }
+        let total_before = allocator.total_bytes();
+        let free_before = allocator.free_bytes();
+
+        let extra = FrameRange::new(PhysAddr::new((MAX_RANGES as u64) * PAGE_SIZE), PAGE_SIZE)
+            .expect("range");
+        assert_eq!(allocator.add_range(extra), Err(MmError::TooManyRanges));
+        assert_eq!(allocator.ranges().len(), MAX_RANGES);
+        assert_eq!(allocator.total_bytes(), total_before);
+        assert_eq!(allocator.free_bytes(), free_before);
+        assert_stats_consistent(&allocator);
+    }
+
+    #[test]
+    fn allocation_table_capacity_is_reported() {
+        // 128 MiB leaves free memory after the allocation table is full.
+        let mut allocator = allocator(0, 128 * 1024 * 1024);
+        let total = allocator.free_bytes();
+        let mut addrs = Vec::with_capacity(MAX_ALLOCATIONS);
+        for _ in 0..MAX_ALLOCATIONS {
+            addrs.push(allocator.alloc(0).expect("page available"));
+        }
+        assert_eq!(allocator.allocated_block_count(), MAX_ALLOCATIONS);
+        assert_eq!(allocator.alloc(0), Err(MmError::TooManyAllocations));
+        assert_eq!(allocator.allocated_block_count(), MAX_ALLOCATIONS);
+        assert_eq!(
+            allocator.allocated_bytes(),
+            MAX_ALLOCATIONS as u64 * PAGE_SIZE
+        );
+
+        for addr in addrs.iter().rev() {
+            allocator.free(*addr, 0).expect("block was allocated");
+        }
+        assert_eq!(allocator.free_bytes(), total);
+        assert_eq!(allocator.free_block_count(), 1);
+        assert_eq!(allocator.allocated_block_count(), 0);
+        assert_stats_consistent(&allocator);
     }
 
     #[test]
@@ -828,7 +1119,6 @@ mod tests {
         assert_eq!(allocator.alloc_pages(3), Err(MmError::InvalidSize));
         let too_big = allocator.alloc_pages(MAX_BUDDY_BLOCK_SIZE / PAGE_SIZE * 2);
         assert_eq!(too_big, Err(MmError::InvalidSize));
-
         assert_eq!(
             allocator.free_pages(PhysAddr::new(0), 0),
             Err(MmError::ZeroLength)
@@ -837,6 +1127,7 @@ mod tests {
             allocator.free_pages(PhysAddr::new(0), 3),
             Err(MmError::InvalidSize)
         );
+
         let addr = allocator.alloc_pages(8).expect("32 KiB available");
         assert!(addr.is_aligned_to(32 * 1024));
         assert_eq!(allocator.allocated_bytes(), 32 * 1024);

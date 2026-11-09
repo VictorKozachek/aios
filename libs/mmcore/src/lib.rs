@@ -13,7 +13,7 @@
 //! * [`addr`] — physical/virtual addresses, HHDM translation, alignment and
 //!   4-level page-table index extraction;
 //! * [`buddy`] — buddy allocator over abstract frame ranges, with per-order
-//!   statistics and coalescing;
+//!   statistics, coalescing and explicit tracking of live allocations;
 //! * [`page_table`] — entry/flags encoding, cache modes and the W^X invariant;
 //! * [`error`] — the shared [`MmError`] type.
 

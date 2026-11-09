@@ -17,6 +17,8 @@ pub enum MmError {
     TooManyRanges,
     /// The fixed free-block table is full: the pool is too fragmented for the configured capacity.
     TooManyFreeBlocks,
+    /// The fixed allocation table is full: too many live blocks are tracked at once.
+    TooManyAllocations,
     /// The buddy order is outside `0..=MAX_BUDDY_ORDER`.
     InvalidOrder,
     /// The requested size is zero, not a power of two, or too large.
@@ -40,6 +42,7 @@ impl fmt::Display for MmError {
             Self::RangeOverlap => "frame ranges overlap",
             Self::TooManyRanges => "too many frame ranges",
             Self::TooManyFreeBlocks => "free-block table is full",
+            Self::TooManyAllocations => "allocation table is full",
             Self::InvalidOrder => "invalid buddy order",
             Self::InvalidSize => "invalid size",
             Self::OutOfMemory => "out of memory",
@@ -58,13 +61,14 @@ mod tests {
     use std::string::String;
     use std::vec::Vec;
 
-    const ALL: [MmError; 12] = [
+    const ALL: [MmError; 13] = [
         MmError::InvalidAlignment,
         MmError::ZeroLength,
         MmError::AddressOverflow,
         MmError::RangeOverlap,
         MmError::TooManyRanges,
         MmError::TooManyFreeBlocks,
+        MmError::TooManyAllocations,
         MmError::InvalidOrder,
         MmError::InvalidSize,
         MmError::OutOfMemory,
