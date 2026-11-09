@@ -3,3 +3,5 @@
 .workers.json
 worktrees.json
 .worktrees.json
+wstate.json
+.watcher-state.json
