@@ -7,6 +7,10 @@ name = "aios-kernel"
 version = "0.1.0"
 
 [[package]]
+name = "bootinfo"
+version = "0.1.0"
+
+[[package]]
 name = "memfmt"
 version = "0.1.0"
 
