@@ -90,7 +90,7 @@ help:
 	@echo "AIOS M0 — цели:"
 	@echo "  make kernel   — собрать ядро ($(TARGET), профиль $(PROFILE))"
 	@echo "  make image    — собрать FAT-ESP образ $(IMAGE) с Limine и ядром"
-	@echo "  make qemu     — запустить QEMU; логи в build/serial.log и build/debugcon.log"
+	@echo "  make qemu     — запустить QEMU; логи в build/run-<время>-<pid>/ (см. build/last-run)"
 	@echo "  make smoke    — запустить QEMU и проверить ключевые строки лога"
 	@echo "  make test     — тесты хоста (memfmt) + сборка ядра под target"
 	@echo "  make clean    — удалить собранное и логи"
@@ -109,10 +109,28 @@ kernel:
 	@echo "make: ядро готово: $(KERNEL)"
 
 # FAT-образ ESP: EFI/BOOT/BOOTX64.EFI + limine.conf + /boot/kernel.
+#
+# Сборка образа защищена каталогом-замком: два параллельных `make smoke`
+# (разные агенты) собирают один и тот же build/aios.img, и без замка второй
+# mkimage мог бы переписать образ под работающим QEMU первого. Замок
+# снимается по trap; замок мёртвого владельца подбирается.
 image: kernel
 	$(call require_tool,mformat,Установите mtools: brew install mtools)
-	KERNEL=$(KERNEL) IMAGE=$(IMAGE) LIMINE_DIR='$(LIMINE_DIR)' CONF=$(LIMINE_CONF) \
-		./build/mkimage.sh
+	@set -e; \
+	lock="$(CURDIR)/build/.image.lock"; \
+	mkdir -p "$(CURDIR)/build"; \
+	while ! mkdir "$$lock" 2>/dev/null; do \
+		owner=$$(cat "$$lock/pid" 2>/dev/null || true); \
+		if [ -n "$$owner" ] && ! kill -0 "$$owner" 2>/dev/null; then \
+			rm -rf "$$lock"; \
+			continue; \
+		fi; \
+		echo "make: image: ждём другую сборку образа ($$lock)"; \
+		sleep 1; \
+	done; \
+	trap 'rm -rf "$$lock"' EXIT INT TERM; \
+	echo $$$$ >"$$lock/pid"; \
+	KERNEL=$(KERNEL) IMAGE=$(IMAGE) LIMINE_DIR='$(LIMINE_DIR)' CONF=$(LIMINE_CONF) ./build/mkimage.sh
 
 # Запуск под UEFI (OVMF). По умолчанию вывод — в файлы, окно выключено.
 qemu: image

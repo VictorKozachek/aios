@@ -25,11 +25,6 @@ fn main() {
     // and a test run silently gets the normal kernel instead of the test one.
     println!("cargo:rerun-if-env-changed=AIOS_EXC_TEST");
     println!("cargo:rerun-if-env-changed=AIOS_MEM_TEST");
-
-    // Compile-time test switches (option_env!) must rebuild the kernel when
-    // their value changes, otherwise a test run silently gets the normal kernel.
-    println!("cargo:rerun-if-env-changed=AIOS_EXC_TEST");
-    println!("cargo:rerun-if-env-changed=AIOS_MEM_TEST");
     println!("cargo:rerun-if-env-changed=AIOS_SMP_TEST");
 
     println!("cargo:rerun-if-changed=linker.ld");
