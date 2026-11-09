@@ -103,10 +103,11 @@ world is pointless:
 | Parameter | MVP value |
 |---|---|
 | Platform | x86-64, UEFI, AMD Ryzen 9 (AM5, Zen 5, AVX-512 VNNI/BF16) |
-| Memory | 128 GB DDR5-5600 (2 channels, ≈ 90 GB/s — this is the speed ceiling) |
-| Storage | NVMe ≥ 2 TB |
-| Models | dense 7–14B for the dev loop; **DeepSeek-V4-Flash (291B/13B active, 82–97 GB) as the flagship** — 7–10 tok/s |
-| Not supported | the 671B family (needs 260–450 GB and 8–12 memory channels), GPU/NPU offload |
+| Memory | **64 GB DDR5** (2 channels, ≈ 90 GB/s — this is the speed ceiling). Upgrading to 128 GB unlocks V4-Flash |
+| Storage | NVMe ≥ 1 TB; layout in [architecture](docs/ARCHITECTURE.md) §5.1.1 |
+| Models | on 64 GB: **R1-Distill 32B Q4 (19.9 GB, ~3 tok/s)** and 14B Q4 (9 GB, ~6 tok/s) for the loop, V2-Lite (10.4 GB, 20–25 tok/s). V4-Flash (82–97 GB) does not fit |
+| GPU | RTX 3060 12 GB — **unused in the MVP**: CUDA requires a proprietary driver, out of scope |
+| Not supported | the 671B family (260–450 GB and 8–12 memory channels), GPU/NPU offload, V4-Flash until a RAM upgrade |
 
 Generation speed is bounded by memory bandwidth, not by the CPU:
 `tok/s ≈ 0.63 × BW / weight size` for dense models and `≈ 0.35 × BW / active
@@ -119,6 +120,7 @@ README.md                      — Russian version
 README.en.md                   — this file
 docs/SPECIFICATION.md          — specification: concept, requirements, options, roadmap
 docs/ARCHITECTURE.md         — architecture: kernel, ABI, memory formats, ADRs, first slice
+docs/WORKFLOW.md             — branches, merges, releases
 docs/research/deepseek-hw-facts.md   — models/hardware: sizes, quantizations, tok/s measurements
 docs/research/aios-tech-facts.md     — boot, drivers, stack, effort estimates
 ```
