@@ -134,8 +134,7 @@ static RSDP: Request<RsdpResponse> = Request::new(request_id(RSDP_ID));
 /// Частота TSC.
 #[used]
 #[unsafe(link_section = ".limine_requests")]
-static TSC_FREQUENCY: Request<TscFrequencyResponse> =
-    Request::new(request_id(TSC_FREQUENCY_ID));
+static TSC_FREQUENCY: Request<TscFrequencyResponse> = Request::new(request_id(TSC_FREQUENCY_ID));
 
 /// Маркер конца области запросов.
 #[used]
@@ -262,36 +261,6 @@ pub struct MemmapEntry {
     pub kind: u64,
 }
 
-// Типы записей карты памяти (limine.h).
-pub const MEMMAP_USABLE: u64 = 0;
-pub const MEMMAP_RESERVED: u64 = 1;
-pub const MEMMAP_ACPI_RECLAIMABLE: u64 = 2;
-pub const MEMMAP_ACPI_NVS: u64 = 3;
-pub const MEMMAP_BAD_MEMORY: u64 = 4;
-pub const MEMMAP_BOOTLOADER_RECLAIMABLE: u64 = 5;
-pub const MEMMAP_EXECUTABLE_AND_MODULES: u64 = 6;
-pub const MEMMAP_FRAMEBUFFER: u64 = 7;
-pub const MEMMAP_RESERVED_MAPPED: u64 = 8;
-
-/// Короткое имя типа записи карты памяти.
-///
-/// Имена ограничены 16 символами: строка таблицы карты памяти должна
-/// помещаться в 80 колонок текстовой консоли на framebuffer.
-pub fn memmap_type_name(kind: u64) -> &'static str {
-    match kind {
-        MEMMAP_USABLE => "usable",
-        MEMMAP_RESERVED => "reserved",
-        MEMMAP_ACPI_RECLAIMABLE => "acpi-reclaimable",
-        MEMMAP_ACPI_NVS => "acpi-nvs",
-        MEMMAP_BAD_MEMORY => "bad-memory",
-        MEMMAP_BOOTLOADER_RECLAIMABLE => "boot-reclaimable",
-        MEMMAP_EXECUTABLE_AND_MODULES => "kernel+modules",
-        MEMMAP_FRAMEBUFFER => "framebuffer",
-        MEMMAP_RESERVED_MAPPED => "reserved-mapped",
-        _ => "unknown",
-    }
-}
-
 #[repr(C)]
 pub struct RsdpResponse {
     pub revision: u64,
@@ -389,4 +358,183 @@ pub unsafe fn cstr(ptr: *const u8) -> &'static str {
         let bytes = core::slice::from_raw_parts(ptr, len);
         core::str::from_utf8(bytes).unwrap_or("<non-utf8>")
     }
+}
+
+// --- T2 (#011): paging mode, modules, entropy -----------------------------
+//
+// The requests below are the ones T2 additionally needs on top of T1's
+// minimal set: which page-table mode the bootloader enabled, what modules it
+// loaded next to the kernel, and 32 bytes of entropy for later key material.
+
+const PAGING_MODE_ID: [u64; 2] = [0x95c1a0edab0944cb, 0xa4e5cb3842f7488a];
+const MODULES_ID: [u64; 2] = [0x3e7e279702be32af, 0xca1c4f3bd1280cee];
+const ENTROPY_ID: [u64; 2] = [0x65ea80255d5682c5, 0x9117240723f493eb];
+
+/// Paging mode value from `limine.h` (x86-64): 0 = 4 levels, 1 = 5 levels.
+pub const PAGING_MODE_X86_64_4LVL: u64 = 0;
+
+/// How many 64-bit words of entropy we ask for (32 bytes total).
+pub const ENTROPY_U64_VALUES: u64 = 4;
+
+/// Paging mode: force 4-level page tables (PML4).
+///
+/// M0 code (HHDM, paging in T4) assumes 4-level tables, so the request pins
+/// mode/max/min to 4 levels; a 5-level machine would otherwise get PML5 and
+/// every table walk in our code would be wrong.
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static PAGING_MODE: PagingModeRequest =
+    PagingModeRequest::new(request_id(PAGING_MODE_ID), PAGING_MODE_X86_64_4LVL);
+
+/// Loaded modules (ramdisk / service images); no internal modules are passed.
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static MODULES: Request<ModulesResponse> = Request::new(request_id(MODULES_ID));
+
+/// Entropy: ask the bootloader for 32 bytes (it may fall back to its own PRNG).
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static ENTROPY: EntropyRequest = EntropyRequest::new(request_id(ENTROPY_ID), ENTROPY_U64_VALUES);
+
+#[repr(C)]
+pub struct PagingModeRequest {
+    id: [u64; 4],
+    revision: u64,
+    response: *mut PagingModeResponse,
+    mode: u64,
+    max_mode: u64,
+    min_mode: u64,
+}
+
+// SAFETY: same argument as for `Request<R>`: the bootloader writes the response
+// pointer before hand-off, after that the structure is read-only.
+unsafe impl Sync for PagingModeRequest {}
+
+impl PagingModeRequest {
+    const fn new(id: [u64; 4], mode: u64) -> Self {
+        Self {
+            id,
+            // Request revision 1 adds `max_mode`/`min_mode`; older bootloaders
+            // ignore the extra fields and fall back to `mode`/default minimum.
+            revision: 1,
+            response: ptr::null_mut(),
+            mode,
+            max_mode: mode,
+            min_mode: mode,
+        }
+    }
+
+    fn response(&self) -> Option<&'static PagingModeResponse> {
+        // SAFETY: see `Request::response`.
+        unsafe { self.response.as_ref() }
+    }
+}
+
+#[repr(C)]
+pub struct PagingModeResponse {
+    pub revision: u64,
+    pub mode: u64,
+}
+
+#[repr(C)]
+pub struct ModulesResponse {
+    pub revision: u64,
+    pub module_count: u64,
+    pub modules: *mut *mut File,
+}
+
+/// `struct limine_file` layout from the protocol (base revision 3).
+///
+/// Only `address`, `size` and `path` are used by T2; the rest is kept so the
+/// paths of the following fields stay correct.
+#[repr(C)]
+pub struct File {
+    pub revision: u64,
+    pub address: *mut u8,
+    pub size: u64,
+    pub path: *const u8,
+    pub string: *const u8,
+    pub media_type: u32,
+    pub unused: u32,
+    pub tftp_ipv4: [u8; 4],
+    pub tftp_port: u32,
+    pub partition_index: u32,
+    pub mbr_disk_id: u32,
+    pub gpt_disk_uuid: [u8; 16],
+    pub gpt_part_uuid: [u8; 16],
+    pub part_uuid: [u8; 16],
+}
+
+#[repr(C)]
+pub struct EntropyRequest {
+    id: [u64; 4],
+    revision: u64,
+    response: *mut EntropyResponse,
+    value_count: u64,
+}
+
+// SAFETY: see `PagingModeRequest`.
+unsafe impl Sync for EntropyRequest {}
+
+impl EntropyRequest {
+    const fn new(id: [u64; 4], value_count: u64) -> Self {
+        Self {
+            id,
+            revision: 0,
+            response: ptr::null_mut(),
+            value_count,
+        }
+    }
+
+    fn response(&self) -> Option<&'static EntropyResponse> {
+        // SAFETY: see `Request::response`.
+        unsafe { self.response.as_ref() }
+    }
+}
+
+#[repr(C)]
+pub struct EntropyResponse {
+    pub revision: u64,
+    pub value_count: u64,
+    pub values: *mut u64,
+}
+
+/// Paging mode enabled by the bootloader (`None` if it did not answer).
+pub fn paging_mode() -> Option<u64> {
+    PAGING_MODE.response().map(|response| response.mode)
+}
+
+/// Modules loaded next to the kernel (`None` if there are none).
+pub fn modules() -> Option<&'static [&'static File]> {
+    let response = MODULES.response()?;
+    if response.module_count == 0 || response.modules.is_null() {
+        return None;
+    }
+    // SAFETY: the bootloader guarantees an array of `module_count` non-null
+    // pointers to `limine_file`, alive for the whole kernel lifetime.
+    Some(unsafe {
+        core::slice::from_raw_parts(
+            response.modules as *const &'static File,
+            response.module_count as usize,
+        )
+    })
+}
+
+/// 32 bytes of entropy for seeding key material (task #011, T2).
+///
+/// The protocol asks for `ENTROPY_U64_VALUES` 64-bit words; the bootloader
+/// allocates the array itself, so nothing is stored on our side.
+pub fn entropy() -> Option<[u8; 32]> {
+    let response = ENTROPY.response()?;
+    if response.values.is_null() || response.value_count < ENTROPY_U64_VALUES {
+        return None;
+    }
+    // SAFETY: the bootloader guarantees `value_count` readable 64-bit words.
+    let words =
+        unsafe { core::slice::from_raw_parts(response.values, ENTROPY_U64_VALUES as usize) };
+    let mut bytes = [0u8; 32];
+    for (index, word) in words.iter().enumerate() {
+        bytes[index * 8..index * 8 + 8].copy_from_slice(&word.to_le_bytes());
+    }
+    Some(bytes)
 }

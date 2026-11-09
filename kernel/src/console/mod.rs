@@ -102,7 +102,11 @@ pub fn init_early() {
     // Сообщаем, какие каналы живы: без этого непонятно, откуда вообще лог.
     crate::println!(
         "console: serial={}, debugcon={}",
-        if has_serial { "COM1 115200 8N1" } else { "none" },
+        if has_serial {
+            "COM1 115200 8N1"
+        } else {
+            "none"
+        },
         if has_debugcon { "0xE9" } else { "none" },
     );
 }

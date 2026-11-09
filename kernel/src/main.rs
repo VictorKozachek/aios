@@ -6,7 +6,7 @@
 //! Что делает M0/T1+T2:
 //! 1. поднимает три канала вывода (serial, debugcon, framebuffer);
 //! 2. проверяет, что загрузчик понял запрошенную base revision;
-//! 3. забирает у Limine карту памяти, HHDM, RSDP, TSC, число ядер, версию;
+//! 3. собирает `bootinfo::BootInfo` из ответов Limine и валидирует его;
 //! 4. печатает сводку и останавливается (планировщика в M0 ещё нет).
 //!
 //! Спецификация — `docs/ARCHITECTURE.md` §3, план — `docs/PLAN-M0.md` (T1, T2).
@@ -14,8 +14,6 @@
 mod boot;
 mod console;
 mod io;
-
-use core::panic::PanicInfo;
 
 /// Точка входа ядра. Limine передаёт управление сюда без аргументов.
 #[unsafe(no_mangle)]
@@ -62,21 +60,15 @@ pub extern "C" fn _start() -> ! {
     }
 
     let info = boot::collect();
+    // Битые данные от загрузчика лучше ловить здесь, чем в аллокаторе (T4):
+    // валидация проверяет карту памяти, HHDM, framebuffer, RSDP, TSC, модули.
+    if let Err(error) = info.validate() {
+        println!("FATAL: invalid BootInfo: {}", error);
+        panic!("invalid BootInfo: {}", error);
+    }
     boot::report(&info);
 
     println!();
     println!("boot: ok, halting (M0: no scheduler yet)");
-    io::halt_forever();
-}
-
-/// Паника: печатаем причину во все каналы и навсегда останавливаемся.
-///
-/// Карта символов для разбора адресов появится вместе с IDT (T3); сейчас
-/// задача — чтобы падение было видно в логе, а не выглядело как зависание.
-#[panic_handler]
-fn panic(info: &PanicInfo<'_>) -> ! {
-    println!();
-    println!("PANIC: {}", info);
-    println!("--- kernel halted ---");
     io::halt_forever();
 }
